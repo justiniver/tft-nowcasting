@@ -167,8 +167,6 @@ The project is successful if the early-adopter model predicts future meta change
 
 ## Quantitative Themes
 
-Although the subject is a video game, the project draws from several quantitative areas:
-
 * Lead-lag analysis
 * Time-series forecasting
 * Bayesian updating
@@ -184,8 +182,6 @@ The player population can be viewed as an information network in which strategie
 ---
 
 ## Why Rust
-
-Rust is not being used simply to call an API.
 
 The project can involve large historical datasets and repeated calculations across:
 
@@ -204,8 +200,6 @@ Rust is particularly well suited for:
 * Efficient simulation
 * Reliable long-running ingestion pipelines
 * Memory-efficient storage of large match histories
-
-The project therefore provides a practical reason to learn Rust while still leaving room for experimentation with systems programming, concurrency, and performance optimization.
 
 ---
 
