@@ -1,12 +1,31 @@
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnitObservation {
+    pub champion: String,
+    pub star_level: u8,
+    pub items: Vec<String>,
+}
+
+impl UnitObservation {
+    pub fn new(champion: &str, star_level: u8, items: Vec<&str>) -> Self {
+        Self {
+            champion: champion.to_owned(),
+            star_level,
+            items: items.into_iter().map(str::to_owned).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchObservation {
     pub player_id: String,
     pub patch: String,
     pub timestamp: u64,
     pub placement: u8,
-    pub champions: Vec<String>,
+    pub units: Vec<UnitObservation>,
+    pub traits: Vec<String>,
+    pub augments: Vec<String>,
 }
 
 impl MatchObservation {
@@ -15,7 +34,9 @@ impl MatchObservation {
         patch: &str,
         timestamp: u64,
         placement: u8,
-        champions: Vec<&str>,
+        units: Vec<UnitObservation>,
+        traits: Vec<&str>,
+        augments: Vec<&str>,
     ) -> Self {
         assert!(
             (1..=8).contains(&placement),
@@ -27,32 +48,31 @@ impl MatchObservation {
             patch: patch.to_owned(),
             timestamp,
             placement,
-            champions: champions.into_iter().map(str::to_owned).collect(),
+            units,
+            traits: traits.into_iter().map(str::to_owned).collect(),
+            augments: augments.into_iter().map(str::to_owned).collect(),
         }
     }
 }
 
-/// A normalized identity for a composition.
+/// The current, deliberately simple identity for a composition.
 ///
-/// Champion names are sorted and deduplicated, so `["Ahri", "Neeko"]` and
-/// `["Neeko", "Ahri"]` produce the same key.
+/// Champion names are sorted and deduplicated, so unit order, star levels,
+/// and items do not affect identity yet.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Composition {
     champions: Vec<String>,
 }
 
 impl Composition {
-    pub fn from_champions(champions: &[String]) -> Self {
-        // `to_vec` clones the strings because we only borrowed the input slice.
-        let mut normalized = champions.to_vec();
-        normalized.sort();
-        normalized.dedup();
+    pub fn from_units(units: &[UnitObservation]) -> Self {
+        let mut champions: Vec<String> = units.iter().map(|unit| unit.champion.clone()).collect();
+        champions.sort();
+        champions.dedup();
 
-        // TODO: Include items, star levels, traits, and augments once the
-        // champion-set baseline is working end to end.
-        Self {
-            champions: normalized,
-        }
+        // TODO: Introduce similarity-based composition grouping and decide how
+        // strongly three-star units should influence that similarity score.
+        Self { champions }
     }
 
     pub fn champions(&self) -> &[String] {
@@ -68,28 +88,55 @@ impl fmt::Display for Composition {
 
 #[cfg(test)]
 mod tests {
-    use super::Composition;
+    use super::{Composition, UnitObservation};
 
     #[test]
-    fn composition_identity_is_independent_of_champion_order() {
-        let first = vec!["Neeko".to_owned(), "Ahri".to_owned()];
-        let second = vec!["Ahri".to_owned(), "Neeko".to_owned()];
+    fn composition_identity_is_independent_of_unit_order() {
+        let first = vec![
+            UnitObservation::new("Neeko", 2, vec!["Warmog's Armor"]),
+            UnitObservation::new("Ahri", 2, vec!["Spear of Shojin"]),
+        ];
+        let second = vec![
+            UnitObservation::new("Ahri", 2, vec!["Spear of Shojin"]),
+            UnitObservation::new("Neeko", 2, vec!["Warmog's Armor"]),
+        ];
 
         assert_eq!(
-            Composition::from_champions(&first),
-            Composition::from_champions(&second)
+            Composition::from_units(&first),
+            Composition::from_units(&second)
         );
     }
 
     #[test]
     fn composition_identity_deduplicates_champions() {
-        let champions = vec!["Ahri".to_owned(), "Neeko".to_owned(), "Ahri".to_owned()];
+        let units = vec![
+            UnitObservation::new("Ahri", 2, vec![]),
+            UnitObservation::new("Neeko", 2, vec![]),
+            UnitObservation::new("Ahri", 1, vec![]),
+        ];
 
-        let composition = Composition::from_champions(&champions);
+        let composition = Composition::from_units(&units);
 
         assert_eq!(
             composition.champions(),
             &["Ahri".to_owned(), "Neeko".to_owned()]
+        );
+    }
+
+    #[test]
+    fn current_identity_ignores_star_levels_and_items() {
+        let ordinary_board = vec![
+            UnitObservation::new("Ahri", 1, vec![]),
+            UnitObservation::new("Neeko", 2, vec!["Warmog's Armor"]),
+        ];
+        let upgraded_board = vec![
+            UnitObservation::new("Ahri", 3, vec!["Rabadon's Deathcap"]),
+            UnitObservation::new("Neeko", 3, vec!["Ionic Spark"]),
+        ];
+
+        assert_eq!(
+            Composition::from_units(&ordinary_board),
+            Composition::from_units(&upgraded_board)
         );
     }
 }

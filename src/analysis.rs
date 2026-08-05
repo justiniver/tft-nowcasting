@@ -73,7 +73,7 @@ pub fn summarize_compositions(
         let group = CompositionGroup {
             patch: observation.patch.clone(),
             window: TimeWindow::containing(observation.timestamp, window_size),
-            composition: Composition::from_champions(&observation.champions),
+            composition: Composition::from_units(&observation.units),
         };
         let accumulator = grouped.entry(group).or_default();
         accumulator.play_count += 1;
@@ -111,14 +111,37 @@ pub fn summarize_compositions(
 #[cfg(test)]
 mod tests {
     use super::summarize_compositions;
-    use crate::model::MatchObservation;
+    use crate::model::{MatchObservation, UnitObservation};
+
+    fn observation(
+        player_id: &str,
+        patch: &str,
+        timestamp: u64,
+        placement: u8,
+        champions: &[&str],
+    ) -> MatchObservation {
+        let units = champions
+            .iter()
+            .map(|champion| UnitObservation::new(champion, 1, vec![]))
+            .collect();
+
+        MatchObservation::new(
+            player_id,
+            patch,
+            timestamp,
+            placement,
+            units,
+            vec![],
+            vec![],
+        )
+    }
 
     #[test]
     fn groups_reordered_boards_and_calculates_average_placement() {
         let observations = vec![
-            MatchObservation::new("player-1", "14.1", 100, 2, vec!["Neeko", "Ahri"]),
-            MatchObservation::new("player-2", "14.1", 200, 6, vec!["Ahri", "Neeko"]),
-            MatchObservation::new("player-3", "14.1", 300, 1, vec!["Jinx", "Vi"]),
+            observation("player-1", "14.1", 100, 2, &["Neeko", "Ahri"]),
+            observation("player-2", "14.1", 200, 6, &["Ahri", "Neeko"]),
+            observation("player-3", "14.1", 300, 1, &["Jinx", "Vi"]),
         ];
 
         let summaries = summarize_compositions(&observations, 300);
@@ -143,10 +166,10 @@ mod tests {
     #[test]
     fn separates_the_same_composition_by_patch_and_time_window() {
         let observations = vec![
-            MatchObservation::new("player-1", "14.1", 10, 2, vec!["Ahri", "Neeko"]),
-            MatchObservation::new("player-2", "14.1", 90, 4, vec!["Neeko", "Ahri"]),
-            MatchObservation::new("player-3", "14.1", 100, 6, vec!["Ahri", "Neeko"]),
-            MatchObservation::new("player-4", "14.2", 10, 1, vec!["Ahri", "Neeko"]),
+            observation("player-1", "14.1", 10, 2, &["Ahri", "Neeko"]),
+            observation("player-2", "14.1", 90, 4, &["Neeko", "Ahri"]),
+            observation("player-3", "14.1", 100, 6, &["Ahri", "Neeko"]),
+            observation("player-4", "14.2", 10, 1, &["Ahri", "Neeko"]),
         ];
 
         let summaries = summarize_compositions(&observations, 100);
@@ -161,6 +184,41 @@ mod tests {
         assert_eq!(summaries[2].patch, "14.2");
         assert_eq!(summaries[2].window.start, 0);
         assert_eq!(summaries[2].play_count, 1);
+    }
+
+    #[test]
+    fn current_grouping_ignores_unit_details_traits_and_augments() {
+        let observations = vec![
+            MatchObservation::new(
+                "player-1",
+                "14.1",
+                10,
+                2,
+                vec![
+                    UnitObservation::new("Ahri", 1, vec![]),
+                    UnitObservation::new("Neeko", 2, vec!["Warmog's Armor"]),
+                ],
+                vec!["Arcanist"],
+                vec!["Jeweled Lotus II"],
+            ),
+            MatchObservation::new(
+                "player-2",
+                "14.1",
+                20,
+                4,
+                vec![
+                    UnitObservation::new("Neeko", 3, vec!["Ionic Spark"]),
+                    UnitObservation::new("Ahri", 3, vec!["Rabadon's Deathcap"]),
+                ],
+                vec!["Different Trait"],
+                vec!["Different Augment"],
+            ),
+        ];
+
+        let summaries = summarize_compositions(&observations, 100);
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].play_count, 2);
     }
 
     #[test]
