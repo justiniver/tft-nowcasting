@@ -106,6 +106,8 @@ pub struct ChallengerLeague {
 #[derive(Debug, Deserialize)]
 pub struct LeagueEntry {
     pub puuid: String,
+    #[serde(rename = "leaguePoints")]
+    pub league_points: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,7 +209,7 @@ fn patch_from_game_version(game_version: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TftMatch, patch_from_game_version};
+    use super::{ChallengerLeague, TftMatch, patch_from_game_version};
 
     #[test]
     fn extracts_patch_from_riot_game_version() {
@@ -215,6 +217,16 @@ mod tests {
             patch_from_game_version("Linux Version 16.15.693.1856 (Jul 29 2026)"),
             "16.15"
         );
+    }
+
+    #[test]
+    fn deserializes_league_points() {
+        let json = include_str!("../tests/fixtures/sample_challenger_league.json");
+        let ladder: ChallengerLeague =
+            serde_json::from_str(json).expect("ladder fixture should deserialize");
+
+        assert_eq!(ladder.entries[0].puuid, "player-a");
+        assert_eq!(ladder.entries[0].league_points, 100);
     }
 
     #[test]

@@ -54,8 +54,9 @@ impl DataStore {
             fs::create_dir_all(parent)?;
         }
 
-        fs::write(path.with_extension("tmp"), json)?;
-        fs::rename(path.with_extension("tmp"), path)
+        let temp_path = path.with_extension("tmp");
+        fs::write(&temp_path, json)?;
+        fs::rename(&temp_path, path)
     }
 }
 

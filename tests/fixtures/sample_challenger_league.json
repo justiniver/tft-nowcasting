@@ -1,0 +1,9 @@
+{
+  "tier": "CHALLENGER",
+  "queue": "RANKED_TFT",
+  "entries": [
+    { "puuid": "player-a", "leaguePoints": 100 },
+    { "puuid": "player-b", "leaguePoints": 500 },
+    { "puuid": "player-c", "leaguePoints": 300 }
+  ]
+}
