@@ -23,6 +23,12 @@ Collect a small cached dataset from three Challenger players:
 cargo run -- ingest
 ```
 
+Audit the cached dataset without making network requests:
+
+```bash
+cargo run -- audit
+```
+
 Ingestion saves original ladder and match JSON under `data/raw/`. Match files
 are reused on later runs instead of being downloaded again.
 
