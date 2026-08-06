@@ -4,6 +4,7 @@ use std::io;
 
 use tft_nowcasting::analysis::summarize_compositions;
 use tft_nowcasting::api::RiotApiClient;
+use tft_nowcasting::audit::audit_cached_matches;
 use tft_nowcasting::ingestion::{IngestionConfig, ingest};
 use tft_nowcasting::model::{MatchObservation, UnitObservation};
 use tft_nowcasting::storage::DataStore;
@@ -24,6 +25,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         Some("api-smoke") => run_api_smoke_test(),
+        Some("audit") => run_dataset_audit(),
         Some("ingest") => run_ingestion(),
         Some(command) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -31,6 +33,40 @@ fn run() -> Result<(), Box<dyn Error>> {
         )
         .into()),
     }
+}
+
+fn run_dataset_audit() -> Result<(), Box<dyn Error>> {
+    let _ = dotenvy::dotenv();
+    let region = env::var("RIOT_REGION").unwrap_or_else(|_| "asia".to_owned());
+    let store = DataStore::new("data");
+    let audit = audit_cached_matches(&store, &region)?;
+
+    println!("Cached dataset audit ({region})");
+    println!("Matches: {}", audit.matches);
+    println!("Player-match observations: {}", audit.observations);
+    println!("Unique players: {}", audit.unique_players);
+    println!(
+        "Exact champion-set compositions: {}",
+        audit.unique_compositions
+    );
+    println!(
+        "Average final-board units: {:.2}",
+        audit.average_units_per_observation()
+    );
+    println!(
+        "Observations missing units/augments: {}/{}",
+        audit.observations_without_units, audit.observations_without_augments
+    );
+    println!(
+        "Timestamp range: {:?} to {:?}",
+        audit.earliest_timestamp, audit.latest_timestamp
+    );
+    println!("Observations by patch: {:?}", audit.observations_by_patch);
+    println!("Matches by queue: {:?}", audit.matches_by_queue);
+    println!("Matches by game type: {:?}", audit.matches_by_game_type);
+    println!("Matches by set: {:?}", audit.matches_by_set);
+
+    Ok(())
 }
 
 fn run_ingestion() -> Result<(), Box<dyn Error>> {

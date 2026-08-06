@@ -121,6 +121,18 @@ impl TftMatch {
         &self.metadata.match_id
     }
 
+    pub fn queue_id(&self) -> i32 {
+        self.info.queue_id
+    }
+
+    pub fn game_type(&self) -> &str {
+        &self.info.tft_game_type
+    }
+
+    pub fn set_number(&self) -> i32 {
+        self.info.tft_set_number
+    }
+
     pub fn into_observations(self) -> Vec<MatchObservation> {
         let patch = patch_from_game_version(&self.info.game_version);
         let timestamp = self.info.game_datetime;
@@ -163,7 +175,13 @@ struct MatchMetadata {
 struct MatchInfo {
     game_datetime: u64,
     game_version: String,
+    #[serde(default)]
+    queue_id: i32,
     participants: Vec<Participant>,
+    #[serde(default)]
+    tft_game_type: String,
+    #[serde(default)]
+    tft_set_number: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -235,6 +253,9 @@ mod tests {
 
         let riot_match: TftMatch = serde_json::from_str(json).expect("fixture should deserialize");
         assert_eq!(riot_match.id(), "JP1_123");
+        assert_eq!(riot_match.queue_id(), 1100);
+        assert_eq!(riot_match.game_type(), "standard");
+        assert_eq!(riot_match.set_number(), 17);
 
         let observations = riot_match.into_observations();
         assert_eq!(observations.len(), 1);

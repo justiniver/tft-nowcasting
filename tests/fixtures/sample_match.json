@@ -7,6 +7,9 @@
   "info": {
     "game_datetime": 1785900000000,
     "game_version": "Linux Version 16.15.693.1856",
+    "queue_id": 1100,
+    "tft_game_type": "standard",
+    "tft_set_number": 17,
     "participants": [
       {
         "augments": ["TFT_Augment_Test"],
