@@ -57,10 +57,8 @@ fn run_local_demo() {
 
 fn run_api_smoke_test() -> Result<(), Box<dyn Error>> {
     let client = RiotApiClient::from_env()?;
-    let platform = env::var("RIOT_PLATFORM").unwrap_or_else(|_| "jp1".to_owned());
-    let region = env::var("RIOT_REGION").unwrap_or_else(|_| "asia".to_owned());
 
-    let status = client.platform_status(&platform)?;
+    let status = client.platform_status()?;
     println!(
         "Authenticated with Riot: {} ({}) has {} maintenance notice(s) and {} incident(s)",
         status.name,
@@ -69,9 +67,9 @@ fn run_api_smoke_test() -> Result<(), Box<dyn Error>> {
         status.incidents.len(),
     );
 
-    let challenger = client.challenger_league(&platform)?;
+    let challenger = client.challenger_league()?;
     println!(
-        "Fetched the {platform} Challenger ladder: {} player(s)",
+        "Fetched the Challenger ladder: {} player(s)",
         challenger.entries.len()
     );
 
@@ -79,7 +77,7 @@ fn run_api_smoke_test() -> Result<(), Box<dyn Error>> {
         .entries
         .first()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Challenger ladder was empty"))?;
-    let match_ids = client.match_ids_by_puuid(&region, &player.puuid, 0, 1)?;
+    let match_ids = client.match_ids_by_puuid(&player.puuid, 0, 1)?;
     let match_id = match_ids.first().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -87,8 +85,8 @@ fn run_api_smoke_test() -> Result<(), Box<dyn Error>> {
         )
     })?;
 
-    let riot_match = client.match_by_id(&region, match_id)?;
-    let fetched_match_id = riot_match.metadata.match_id.clone();
+    let riot_match = client.match_by_id(match_id)?;
+    let fetched_match_id = riot_match.id().to_owned();
     let observations = riot_match.into_observations();
     let unit_count: usize = observations
         .iter()
