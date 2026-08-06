@@ -49,6 +49,26 @@ impl DataStore {
             .join(format!("{match_id}.json"))
     }
 
+    pub fn cached_match_paths(&self, region: &str) -> io::Result<Vec<PathBuf>> {
+        let directory = self.root.join("raw/matches").join(region);
+        if !directory.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut paths = Vec::new();
+        for entry in fs::read_dir(directory)? {
+            let path = entry?.path();
+            let is_json = path.extension().and_then(|extension| extension.to_str()) == Some("json");
+
+            if path.is_file() && is_json {
+                paths.push(path);
+            }
+        }
+
+        paths.sort();
+        Ok(paths)
+    }
+
     fn write_json(&self, path: &Path, json: &str) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -79,17 +99,35 @@ mod tests {
         ));
         let store = DataStore::new(&root);
 
-        let path = store
-            .save_match_json("asia", "JP1_123", "{\"match\":true}")
-            .expect("fixture should be saved");
+        assert!(
+            store
+                .cached_match_paths("asia")
+                .expect("a missing cache directory should not fail")
+                .is_empty()
+        );
 
-        assert!(path.is_file());
-        assert!(store.match_exists("asia", "JP1_123"));
+        let later_path = store
+            .save_match_json("asia", "JP1_200", "{\"match\":true}")
+            .expect("fixture should be saved");
+        let earlier_path = store
+            .save_match_json("asia", "JP1_100", "{\"match\":true}")
+            .expect("fixture should be saved");
+        fs::write(later_path.with_extension("txt"), "not JSON")
+            .expect("non-JSON fixture should be saved");
+
+        assert!(later_path.is_file());
+        assert!(store.match_exists("asia", "JP1_200"));
         assert_eq!(
             store
-                .read_match_json("asia", "JP1_123")
+                .read_match_json("asia", "JP1_200")
                 .expect("fixture should be readable"),
             "{\"match\":true}"
+        );
+        assert_eq!(
+            store
+                .cached_match_paths("asia")
+                .expect("cache directory should be readable"),
+            [earlier_path, later_path]
         );
 
         fs::remove_dir_all(root).expect("temporary test directory should be removable");

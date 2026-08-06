@@ -1,6 +1,6 @@
+use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::cmp::Reverse;
 
 use crate::api::{ApiResult, ChallengerLeague, LeagueEntry, RiotApiClient, TftMatch};
 use crate::storage::DataStore;
