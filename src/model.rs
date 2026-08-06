@@ -70,7 +70,7 @@ impl Composition {
         champions.sort();
         champions.dedup();
 
-        // TODO: Introduce similarity-based composition grouping and decide how
+        // TODO for later: Introduce similarity-based composition grouping and decide how
         // strongly three-star units should influence that similarity score.
         Self { champions }
     }
