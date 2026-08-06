@@ -1,0 +1,29 @@
+{
+  "metadata": {
+    "data_version": "5",
+    "match_id": "JP1_123",
+    "participants": ["player-1"]
+  },
+  "info": {
+    "game_datetime": 1785900000000,
+    "game_version": "Linux Version 16.15.693.1856",
+    "participants": [
+      {
+        "augments": ["TFT_Augment_Test"],
+        "placement": 1,
+        "puuid": "player-1",
+        "traits": [
+          { "name": "TFT_Trait_Active", "tier_current": 1 },
+          { "name": "TFT_Trait_Inactive", "tier_current": 0 }
+        ],
+        "units": [
+          {
+            "character_id": "TFT_Champion_Test",
+            "itemNames": ["TFT_Item_Test"],
+            "tier": 3
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,2 +1,4 @@
 /target
 .env
+/data/raw/
+/data/reports/

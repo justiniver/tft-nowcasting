@@ -17,6 +17,15 @@ Run a live Riot API smoke test:
 cargo run -- api-smoke
 ```
 
+Collect a small cached dataset from three Challenger players:
+
+```bash
+cargo run -- ingest
+```
+
+Ingestion saves original ladder and match JSON under `data/raw/`. Match files
+are reused on later runs instead of being downloaded again.
+
 The smoke test reads `RIOT_KEY` from `.env`, verifies authentication, fetches a
 Challenger player, retrieves one recent match ID, and converts that match into
 the project's observation model. The key is sent only through the

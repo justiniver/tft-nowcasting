@@ -4,7 +4,9 @@ use std::io;
 
 use tft_nowcasting::analysis::summarize_compositions;
 use tft_nowcasting::api::RiotApiClient;
+use tft_nowcasting::ingestion::{IngestionConfig, ingest};
 use tft_nowcasting::model::{MatchObservation, UnitObservation};
+use tft_nowcasting::storage::DataStore;
 
 const SAMPLE_WINDOW_SIZE: u64 = 300;
 
@@ -22,12 +24,31 @@ fn run() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         Some("api-smoke") => run_api_smoke_test(),
+        Some("ingest") => run_ingestion(),
         Some(command) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("unknown command {command:?}; try `cargo run -- api-smoke`"),
+            format!("unknown command {command:?}; try `cargo run -- ingest`"),
         )
         .into()),
     }
+}
+
+fn run_ingestion() -> Result<(), Box<dyn Error>> {
+    let client = RiotApiClient::from_env()?;
+    let store = DataStore::new("data");
+    let report = ingest(&client, &store, IngestionConfig::default())?;
+
+    println!(
+        "Saved ladder snapshot: {}",
+        report.ladder_snapshot.display()
+    );
+    println!("Players considered: {}", report.players_considered);
+    println!("Unique matches: {}", report.unique_matches);
+    println!("Downloaded matches: {}", report.downloaded_matches);
+    println!("Cache hits: {}", report.cached_matches);
+    println!("Player-match observations: {}", report.observations);
+
+    Ok(())
 }
 
 fn run_local_demo() {

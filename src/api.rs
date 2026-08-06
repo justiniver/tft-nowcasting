@@ -37,7 +37,11 @@ impl RiotApiClient {
     }
 
     pub fn challenger_league(&self) -> ApiResult<ChallengerLeague> {
-        self.get(&format!(
+        Ok(serde_json::from_str(&self.challenger_league_json()?)?)
+    }
+
+    pub fn challenger_league_json(&self) -> ApiResult<String> {
+        self.get_text(&format!(
             "https://{}.api.riotgames.com/tft/league/v1/challenger",
             self.platform
         ))
@@ -51,20 +55,36 @@ impl RiotApiClient {
     }
 
     pub fn match_by_id(&self, match_id: &str) -> ApiResult<TftMatch> {
-        self.get(&format!(
+        Ok(serde_json::from_str(&self.match_json_by_id(match_id)?)?)
+    }
+
+    pub fn match_json_by_id(&self, match_id: &str) -> ApiResult<String> {
+        self.get_text(&format!(
             "https://{}.api.riotgames.com/tft/match/v1/matches/{match_id}",
             self.region
         ))
     }
 
+    pub fn platform(&self) -> &str {
+        &self.platform
+    }
+
+    pub fn region(&self) -> &str {
+        &self.region
+    }
+
     fn get<T: DeserializeOwned>(&self, url: &str) -> ApiResult<T> {
+        Ok(serde_json::from_str(&self.get_text(url)?)?)
+    }
+
+    fn get_text(&self, url: &str) -> ApiResult<String> {
         Ok(self
             .http
             .get(url)
             .header("X-Riot-Token", &self.api_key)
             .send()?
             .error_for_status()?
-            .json()?)
+            .text()?)
     }
 }
 
@@ -199,29 +219,7 @@ mod tests {
 
     #[test]
     fn deserializes_and_converts_a_match_fixture() {
-        let json = r#"
-        {
-          "metadata": {"match_id": "JP1_123"},
-          "info": {
-            "game_datetime": 1785900000000,
-            "game_version": "Linux Version 16.15.693.1856",
-            "participants": [{
-              "augments": ["TFT_Augment_Test"],
-              "placement": 1,
-              "puuid": "player-1",
-              "traits": [
-                {"name": "TFT_Trait_Active", "tier_current": 1},
-                {"name": "TFT_Trait_Inactive", "tier_current": 0}
-              ],
-              "units": [{
-                "character_id": "TFT_Champion_Test",
-                "itemNames": ["TFT_Item_Test"],
-                "tier": 3
-              }]
-            }]
-          }
-        }
-        "#;
+        let json = include_str!("../tests/fixtures/sample_match.json");
 
         let riot_match: TftMatch = serde_json::from_str(json).expect("fixture should deserialize");
         assert_eq!(riot_match.id(), "JP1_123");
