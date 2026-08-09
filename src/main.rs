@@ -9,6 +9,7 @@ use tft_nowcasting::analysis::{
 use tft_nowcasting::api::RiotApiClient;
 use tft_nowcasting::audit::audit_cached_matches;
 use tft_nowcasting::dataset::load_standard_ranked_dataset;
+use tft_nowcasting::evaluation::evaluate_historical_forecasts;
 use tft_nowcasting::ingestion::{IngestionConfig, ingest};
 use tft_nowcasting::model::{MatchObservation, UnitObservation};
 use tft_nowcasting::storage::DataStore;
@@ -56,6 +57,7 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
     let scouts = summarize_scouts(&adopters);
     let forecasts = forecast_from_scouts(&dataset.observations, &scouts, ANALYSIS_WINDOW_SIZE_MS);
     let candidates = emerging_candidates(&summaries);
+    let evaluation = evaluate_historical_forecasts(&dataset.observations, ANALYSIS_WINDOW_SIZE_MS);
 
     println!("Standard ranked analysis ({region})");
     println!("Included matches: {}", dataset.matches);
@@ -144,6 +146,24 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
             forecast.play_count,
             forecast.scout_play_rate * 100.0,
             forecast.average_placement,
+        );
+    }
+
+    println!(
+        "Historical next-window evaluation over {} window(s) with successful growth events:",
+        evaluation.event_windows
+    );
+    for (name, method) in [
+        ("Scout forecast", &evaluation.scout),
+        ("Popularity baseline", &evaluation.popularity),
+        ("Performance baseline", &evaluation.performance),
+    ] {
+        println!(
+            "- {name}: {}/{} hit(s), {:.0}% hit rate, {:.0}% coverage",
+            method.hits,
+            method.predictions,
+            method.hit_rate() * 100.0,
+            method.coverage(evaluation.event_windows) * 100.0,
         );
     }
 
