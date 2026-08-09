@@ -60,10 +60,10 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
     println!("Excluded other-mode matches: {}", dataset.excluded_matches);
     println!("Player-match observations: {}", dataset.observations.len());
     println!(
-        "Exact composition groups in 24-hour windows: {}",
+        "Composition families in 24-hour windows: {}",
         summaries.len()
     );
-    println!("Most-played exact composition windows:");
+    println!("Most-played composition families:");
     for summary in most_played.into_iter().take(10) {
         println!(
             "- patch {}, window [{}, {}): {} — {} game(s), {:.2} average placement, {:.0}% top four",

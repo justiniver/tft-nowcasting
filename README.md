@@ -37,7 +37,8 @@ cargo run -- analyze
 
 Ingestion saves original ladder and match JSON under `data/raw/`. Match files
 are reused on later runs instead of being downloaded again. Analysis keeps
-queue 1100 matches and excludes other modes such as Double Up.
+queue 1100 matches, excludes other modes such as Double Up, and groups boards
+that share at least 80% of the larger board's champions.
 
 The smoke test reads `RIOT_KEY` from `.env`, verifies authentication, fetches a
 Challenger player, retrieves one recent match ID, and converts that match into

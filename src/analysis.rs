@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use crate::model::{Composition, MatchObservation};
 
+const MINIMUM_CHAMPION_OVERLAP: f64 = 0.8;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompositionSummary {
     pub patch: String,
@@ -45,6 +47,12 @@ struct CompositionGroup {
     composition: Composition,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PatchComposition {
+    patch: String,
+    composition: Composition,
+}
+
 #[derive(Debug, Default)]
 struct PlacementAccumulator {
     play_count: usize,
@@ -52,8 +60,9 @@ struct PlacementAccumulator {
     top_four_count: usize,
 }
 
-/// Groups observations by their normalized composition and calculates basic
-/// statistics for each group.
+/// Groups observations into similar composition families and calculates basic
+/// statistics for each family. The displayed composition is the family's most
+/// common exact board, with alphabetical ordering used to break ties.
 ///
 /// `&[MatchObservation]` is a borrowed slice: this function can read the
 /// observations without taking ownership of them. Time windows are fixed and
@@ -67,13 +76,22 @@ pub fn summarize_compositions(
         "time window size must be greater than zero"
     );
 
+    let families = assign_composition_families(observations);
     let mut grouped: HashMap<CompositionGroup, PlacementAccumulator> = HashMap::new();
 
     for observation in observations {
+        let exact_composition = PatchComposition {
+            patch: observation.patch.clone(),
+            composition: Composition::from_units(&observation.units),
+        };
+        let representative = families
+            .get(&exact_composition)
+            .expect("every observed composition should have a family")
+            .clone();
         let group = CompositionGroup {
             patch: observation.patch.clone(),
             window: TimeWindow::containing(observation.timestamp, window_size),
-            composition: Composition::from_units(&observation.units),
+            composition: representative,
         };
         let accumulator = grouped.entry(group).or_default();
         accumulator.play_count += 1;
@@ -106,6 +124,55 @@ pub fn summarize_compositions(
     });
 
     summaries
+}
+
+fn assign_composition_families(
+    observations: &[MatchObservation],
+) -> HashMap<PatchComposition, Composition> {
+    let mut exact_counts: HashMap<PatchComposition, usize> = HashMap::new();
+    for observation in observations {
+        let exact_composition = PatchComposition {
+            patch: observation.patch.clone(),
+            composition: Composition::from_units(&observation.units),
+        };
+        *exact_counts.entry(exact_composition).or_default() += 1;
+    }
+
+    let mut exact_compositions: Vec<_> = exact_counts.into_iter().collect();
+    exact_compositions.sort_by(|(left, left_count), (right, right_count)| {
+        left.patch
+            .cmp(&right.patch)
+            .then_with(|| right_count.cmp(left_count))
+            .then_with(|| left.composition.cmp(&right.composition))
+    });
+
+    let mut representatives: Vec<PatchComposition> = Vec::new();
+    let mut families = HashMap::new();
+
+    for (exact_composition, _) in exact_compositions {
+        let matching_representative = representatives
+            .iter()
+            .find(|representative| {
+                representative.patch == exact_composition.patch
+                    && representative
+                        .composition
+                        .champion_overlap(&exact_composition.composition)
+                        >= MINIMUM_CHAMPION_OVERLAP
+            })
+            .map(|representative| representative.composition.clone());
+
+        let representative = match matching_representative {
+            Some(representative) => representative,
+            None => {
+                representatives.push(exact_composition.clone());
+                exact_composition.composition.clone()
+            }
+        };
+
+        families.insert(exact_composition, representative);
+    }
+
+    families
 }
 
 #[cfg(test)]
@@ -219,6 +286,83 @@ mod tests {
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].play_count, 2);
+    }
+
+    #[test]
+    fn groups_boards_with_at_least_eighty_percent_champion_overlap() {
+        let observations = vec![
+            observation(
+                "player-1",
+                "14.1",
+                10,
+                2,
+                &["Ahri", "Jinx", "Neeko", "Vi", "Yasuo"],
+            ),
+            observation(
+                "player-2",
+                "14.1",
+                20,
+                6,
+                &["Ahri", "Jinx", "Neeko", "Vi", "Zed"],
+            ),
+        ];
+
+        let summaries = summarize_compositions(&observations, 100);
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].play_count, 2);
+        assert_eq!(summaries[0].average_placement, 4.0);
+        assert_eq!(summaries[0].top_four_rate, 0.5);
+    }
+
+    #[test]
+    fn keeps_boards_below_eighty_percent_overlap_separate() {
+        let observations = vec![
+            observation(
+                "player-1",
+                "14.1",
+                10,
+                2,
+                &["Ahri", "Jinx", "Neeko", "Vi", "Yasuo"],
+            ),
+            observation(
+                "player-2",
+                "14.1",
+                20,
+                6,
+                &["Ahri", "Jinx", "Neeko", "Riven", "Zed"],
+            ),
+        ];
+
+        let summaries = summarize_compositions(&observations, 100);
+
+        assert_eq!(summaries.len(), 2);
+    }
+
+    #[test]
+    fn uses_the_same_family_representative_across_time_windows() {
+        let common_board = ["Ahri", "Jinx", "Neeko", "Vi", "Yasuo"];
+        let observations = vec![
+            observation("player-1", "14.1", 10, 2, &common_board),
+            observation("player-2", "14.1", 110, 3, &common_board),
+            observation(
+                "player-3",
+                "14.1",
+                120,
+                4,
+                &["Ahri", "Jinx", "Neeko", "Vi", "Zed"],
+            ),
+        ];
+
+        let summaries = summarize_compositions(&observations, 100);
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(
+            summaries[0].composition.to_string(),
+            "Ahri, Jinx, Neeko, Vi, Yasuo"
+        );
+        assert_eq!(summaries[1].composition, summaries[0].composition);
+        assert_eq!(summaries[1].play_count, 2);
     }
 
     #[test]

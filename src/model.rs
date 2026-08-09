@@ -70,13 +70,27 @@ impl Composition {
         champions.sort();
         champions.dedup();
 
-        // Future similarity-based grouping can give three-star units more
-        // weight without changing how raw observations are stored.
         Self { champions }
     }
 
     pub fn champions(&self) -> &[String] {
         &self.champions
+    }
+
+    /// The fraction of the larger board's champions shared by both boards.
+    pub fn champion_overlap(&self, other: &Self) -> f64 {
+        let larger_board_size = self.champions.len().max(other.champions.len());
+        if larger_board_size == 0 {
+            return 1.0;
+        }
+
+        let shared_champions = self
+            .champions
+            .iter()
+            .filter(|champion| other.champions.binary_search(champion).is_ok())
+            .count();
+
+        shared_champions as f64 / larger_board_size as f64
     }
 }
 
@@ -138,5 +152,27 @@ mod tests {
             Composition::from_units(&ordinary_board),
             Composition::from_units(&upgraded_board)
         );
+    }
+
+    #[test]
+    fn calculates_champion_overlap_against_the_larger_board() {
+        let first = vec![
+            UnitObservation::new("Ahri", 1, vec![]),
+            UnitObservation::new("Jinx", 1, vec![]),
+            UnitObservation::new("Neeko", 1, vec![]),
+            UnitObservation::new("Vi", 1, vec![]),
+        ];
+        let second = vec![
+            UnitObservation::new("Ahri", 1, vec![]),
+            UnitObservation::new("Jinx", 1, vec![]),
+            UnitObservation::new("Neeko", 1, vec![]),
+            UnitObservation::new("Vi", 1, vec![]),
+            UnitObservation::new("Yasuo", 1, vec![]),
+        ];
+
+        let overlap =
+            Composition::from_units(&first).champion_overlap(&Composition::from_units(&second));
+
+        assert_eq!(overlap, 0.8);
     }
 }
