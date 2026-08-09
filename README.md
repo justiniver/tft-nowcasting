@@ -29,8 +29,15 @@ Audit the cached dataset without making network requests:
 cargo run -- audit
 ```
 
+Analyze only standard ranked matches from the local cache:
+
+```bash
+cargo run -- analyze
+```
+
 Ingestion saves original ladder and match JSON under `data/raw/`. Match files
-are reused on later runs instead of being downloaded again.
+are reused on later runs instead of being downloaded again. Analysis keeps
+queue 1100 matches and excludes other modes such as Double Up.
 
 The smoke test reads `RIOT_KEY` from `.env`, verifies authentication, fetches a
 Challenger player, retrieves one recent match ID, and converts that match into

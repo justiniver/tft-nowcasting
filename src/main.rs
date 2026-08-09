@@ -5,11 +5,13 @@ use std::io;
 use tft_nowcasting::analysis::summarize_compositions;
 use tft_nowcasting::api::RiotApiClient;
 use tft_nowcasting::audit::audit_cached_matches;
+use tft_nowcasting::dataset::load_standard_ranked_dataset;
 use tft_nowcasting::ingestion::{IngestionConfig, ingest};
 use tft_nowcasting::model::{MatchObservation, UnitObservation};
 use tft_nowcasting::storage::DataStore;
 
 const SAMPLE_WINDOW_SIZE: u64 = 300;
+const ANALYSIS_WINDOW_SIZE_MS: u64 = 24 * 60 * 60 * 1_000;
 
 fn main() {
     if let Err(error) = run() {
@@ -25,6 +27,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         Some("api-smoke") => run_api_smoke_test(),
+        Some("analyze") => run_cached_analysis(),
         Some("audit") => run_dataset_audit(),
         Some("ingest") => run_ingestion(),
         Some(command) => Err(io::Error::new(
@@ -33,6 +36,48 @@ fn run() -> Result<(), Box<dyn Error>> {
         )
         .into()),
     }
+}
+
+fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
+    let _ = dotenvy::dotenv();
+    let region = env::var("RIOT_REGION").unwrap_or_else(|_| "asia".to_owned());
+    let store = DataStore::new("data");
+    let dataset = load_standard_ranked_dataset(&store, &region)?;
+    let summaries = summarize_compositions(&dataset.observations, ANALYSIS_WINDOW_SIZE_MS);
+    let mut most_played: Vec<_> = summaries.iter().collect();
+
+    most_played.sort_by(|left, right| {
+        right
+            .play_count
+            .cmp(&left.play_count)
+            .then_with(|| left.patch.cmp(&right.patch))
+            .then_with(|| left.window.cmp(&right.window))
+            .then_with(|| left.composition.cmp(&right.composition))
+    });
+
+    println!("Standard ranked analysis ({region})");
+    println!("Included matches: {}", dataset.matches);
+    println!("Excluded other-mode matches: {}", dataset.excluded_matches);
+    println!("Player-match observations: {}", dataset.observations.len());
+    println!(
+        "Exact composition groups in 24-hour windows: {}",
+        summaries.len()
+    );
+    println!("Most-played exact composition windows:");
+    for summary in most_played.into_iter().take(10) {
+        println!(
+            "- patch {}, window [{}, {}): {} — {} game(s), {:.2} average placement, {:.0}% top four",
+            summary.patch,
+            summary.window.start,
+            summary.window.end_exclusive,
+            summary.composition,
+            summary.play_count,
+            summary.average_placement,
+            summary.top_four_rate * 100.0,
+        );
+    }
+
+    Ok(())
 }
 
 fn run_dataset_audit() -> Result<(), Box<dyn Error>> {
