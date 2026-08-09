@@ -19,6 +19,17 @@ pub struct CompositionSummary {
     pub top_four_rate: f64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct EarlyAdopter {
+    pub player_id: String,
+    pub patch: String,
+    pub window: TimeWindow,
+    pub composition: Composition,
+    pub play_count: usize,
+    pub first_played_at: u64,
+    pub average_placement: f64,
+}
+
 /// A fixed, half-open time window: `start <= timestamp < end_exclusive`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TimeWindow {
@@ -63,6 +74,27 @@ struct PlacementAccumulator {
     play_count: usize,
     placement_total: u64,
     top_four_count: usize,
+}
+
+struct CandidateWindow {
+    patch: String,
+    composition: Composition,
+    previous_window: TimeWindow,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct AdopterGroup {
+    player_id: String,
+    patch: String,
+    window: TimeWindow,
+    composition: Composition,
+}
+
+#[derive(Debug, Default)]
+struct AdopterAccumulator {
+    play_count: usize,
+    placement_total: u64,
+    first_played_at: Option<u64>,
 }
 
 /// Groups observations into similar composition families and calculates basic
@@ -179,6 +211,106 @@ pub fn emerging_candidates(summaries: &[CompositionSummary]) -> Vec<&Composition
     candidates
 }
 
+/// Finds players who used an emerging family in its previous populated window.
+pub fn early_adopters(
+    observations: &[MatchObservation],
+    candidates: &[&CompositionSummary],
+    window_size: u64,
+) -> Vec<EarlyAdopter> {
+    assert!(
+        window_size > 0,
+        "time window size must be greater than zero"
+    );
+
+    let candidate_windows: Vec<_> = candidates
+        .iter()
+        .filter_map(|candidate| {
+            let previous_window = observations
+                .iter()
+                .filter(|observation| observation.patch == candidate.patch)
+                .map(|observation| TimeWindow::containing(observation.timestamp, window_size))
+                .filter(|window| *window < candidate.window)
+                .max()?;
+
+            Some(CandidateWindow {
+                patch: candidate.patch.clone(),
+                composition: candidate.composition.clone(),
+                previous_window,
+            })
+        })
+        .collect();
+
+    if candidate_windows.is_empty() {
+        return Vec::new();
+    }
+
+    let families = assign_composition_families(observations);
+    let mut grouped: HashMap<AdopterGroup, AdopterAccumulator> = HashMap::new();
+
+    for observation in observations {
+        let window = TimeWindow::containing(observation.timestamp, window_size);
+        let exact_composition = PatchComposition {
+            patch: observation.patch.clone(),
+            composition: Composition::from_units(&observation.units),
+        };
+        let representative = families
+            .get(&exact_composition)
+            .expect("every observed composition should have a family");
+
+        for candidate in &candidate_windows {
+            if observation.patch != candidate.patch
+                || window != candidate.previous_window
+                || representative != &candidate.composition
+            {
+                continue;
+            }
+
+            let group = AdopterGroup {
+                player_id: observation.player_id.clone(),
+                patch: observation.patch.clone(),
+                window,
+                composition: representative.clone(),
+            };
+            let accumulator = grouped.entry(group).or_default();
+            accumulator.play_count += 1;
+            accumulator.placement_total += u64::from(observation.placement);
+            accumulator.first_played_at = Some(
+                accumulator
+                    .first_played_at
+                    .map_or(observation.timestamp, |timestamp| {
+                        timestamp.min(observation.timestamp)
+                    }),
+            );
+        }
+    }
+
+    let mut adopters: Vec<_> = grouped
+        .into_iter()
+        .map(|(group, accumulator)| EarlyAdopter {
+            player_id: group.player_id,
+            patch: group.patch,
+            window: group.window,
+            composition: group.composition,
+            play_count: accumulator.play_count,
+            first_played_at: accumulator
+                .first_played_at
+                .expect("an adopter should have at least one observation"),
+            average_placement: accumulator.placement_total as f64 / accumulator.play_count as f64,
+        })
+        .collect();
+
+    adopters.sort_by(|left, right| {
+        left.patch
+            .cmp(&right.patch)
+            .then_with(|| left.composition.cmp(&right.composition))
+            .then_with(|| left.average_placement.total_cmp(&right.average_placement))
+            .then_with(|| left.first_played_at.cmp(&right.first_played_at))
+            .then_with(|| left.player_id.cmp(&right.player_id))
+    });
+
+    adopters
+}
+
 fn add_usage_rate_changes(summaries: &mut [CompositionSummary]) {
     let mut previous_patch = None;
     let mut previous_rates: HashMap<Composition, f64> = HashMap::new();
@@ -269,7 +401,7 @@ fn assign_composition_families(
 
 #[cfg(test)]
 mod tests {
-    use super::{emerging_candidates, summarize_compositions};
+    use super::{early_adopters, emerging_candidates, summarize_compositions};
     use crate::model::{MatchObservation, UnitObservation};
 
     fn observation(
@@ -544,11 +676,18 @@ mod tests {
         let summaries = summarize_compositions(&observations, 100);
 
         let candidates = emerging_candidates(&summaries);
+        let adopters = early_adopters(&observations, &candidates, 100);
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].composition.to_string(), "Ahri");
         assert_eq!(candidates[0].play_count, 2);
         assert_eq!(candidates[0].average_placement, 1.5);
+        assert_eq!(adopters.len(), 1);
+        assert_eq!(adopters[0].player_id, "player-1");
+        assert_eq!(adopters[0].window.start, 0);
+        assert_eq!(adopters[0].play_count, 1);
+        assert_eq!(adopters[0].first_played_at, 10);
+        assert_eq!(adopters[0].average_placement, 1.0);
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::env;
 use std::error::Error;
 use std::io;
 
-use tft_nowcasting::analysis::{emerging_candidates, summarize_compositions};
+use tft_nowcasting::analysis::{early_adopters, emerging_candidates, summarize_compositions};
 use tft_nowcasting::api::RiotApiClient;
 use tft_nowcasting::audit::audit_cached_matches;
 use tft_nowcasting::dataset::load_standard_ranked_dataset;
@@ -45,6 +45,7 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
     let dataset = load_standard_ranked_dataset(&store, &region)?;
     let summaries = summarize_compositions(&dataset.observations, ANALYSIS_WINDOW_SIZE_MS);
     let candidates = emerging_candidates(&summaries);
+    let adopters = early_adopters(&dataset.observations, &candidates, ANALYSIS_WINDOW_SIZE_MS);
 
     println!("Standard ranked analysis ({region})");
     println!("Included matches: {}", dataset.matches);
@@ -74,6 +75,26 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
             summary.average_placement,
             summary.top_four_rate * 100.0,
         );
+
+        let mut matching_adopters = adopters
+            .iter()
+            .filter(|adopter| {
+                adopter.patch == summary.patch && adopter.composition == summary.composition
+            })
+            .take(5)
+            .peekable();
+        if matching_adopters.peek().is_none() {
+            println!("  Previous-window adopters: none");
+        }
+        for adopter in matching_adopters {
+            println!(
+                "  Previous-window adopter {} — {} game(s), {:.2} average placement, first played at {}",
+                adopter.player_id,
+                adopter.play_count,
+                adopter.average_placement,
+                adopter.first_played_at,
+            );
+        }
     }
 
     Ok(())
