@@ -65,6 +65,10 @@ fn run_dataset_audit() -> Result<(), Box<dyn Error>> {
     println!("Matches by queue: {:?}", audit.matches_by_queue);
     println!("Matches by game type: {:?}", audit.matches_by_game_type);
     println!("Matches by set: {:?}", audit.matches_by_set);
+    println!("Most common exact compositions:");
+    for (composition, count) in audit.most_common_compositions() {
+        println!("- {composition}: {count} observation(s)");
+    }
 
     Ok(())
 }
