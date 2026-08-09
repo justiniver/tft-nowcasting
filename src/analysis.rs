@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use crate::model::{Composition, MatchObservation};
 
 const MINIMUM_CHAMPION_OVERLAP: f64 = 0.8;
+const MINIMUM_EMERGING_PLAYS: usize = 2;
+const MAXIMUM_EMERGING_AVERAGE_PLACEMENT: f64 = 4.5;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompositionSummary {
@@ -144,6 +146,39 @@ pub fn summarize_compositions(
     summaries
 }
 
+/// Returns growing, successful composition families from the latest window.
+/// A candidate needs at least two plays and an average placement of 4.5 or
+/// better. This is an intentionally small-sample exploratory filter.
+pub fn emerging_candidates(summaries: &[CompositionSummary]) -> Vec<&CompositionSummary> {
+    let latest_window = summaries.iter().map(|summary| summary.window).max();
+    let mut candidates: Vec<_> = summaries
+        .iter()
+        .filter(|summary| {
+            Some(summary.window) == latest_window
+                && summary.play_count >= MINIMUM_EMERGING_PLAYS
+                && summary.average_placement <= MAXIMUM_EMERGING_AVERAGE_PLACEMENT
+                && summary.usage_rate_change.is_some_and(|change| change > 0.0)
+        })
+        .collect();
+
+    candidates.sort_by(|left, right| {
+        right
+            .usage_rate_change
+            .expect("candidates should have usage growth")
+            .total_cmp(
+                &left
+                    .usage_rate_change
+                    .expect("candidates should have usage growth"),
+            )
+            .then_with(|| left.average_placement.total_cmp(&right.average_placement))
+            .then_with(|| right.play_count.cmp(&left.play_count))
+            .then_with(|| left.patch.cmp(&right.patch))
+            .then_with(|| left.composition.cmp(&right.composition))
+    });
+
+    candidates
+}
+
 fn add_usage_rate_changes(summaries: &mut [CompositionSummary]) {
     let mut previous_patch = None;
     let mut previous_rates: HashMap<Composition, f64> = HashMap::new();
@@ -234,7 +269,7 @@ fn assign_composition_families(
 
 #[cfg(test)]
 mod tests {
-    use super::summarize_compositions;
+    use super::{emerging_candidates, summarize_compositions};
     use crate::model::{MatchObservation, UnitObservation};
 
     fn observation(
@@ -489,6 +524,31 @@ mod tests {
 
         assert_eq!(summaries[0].usage_rate_change, None);
         assert_eq!(summaries[1].usage_rate_change, Some(1.0));
+    }
+
+    #[test]
+    fn emerging_candidates_require_growth_performance_and_multiple_plays() {
+        let observations = vec![
+            observation("player-1", "14.1", 10, 1, &["Ahri"]),
+            observation("player-2", "14.1", 20, 2, &["Jinx"]),
+            observation("player-3", "14.1", 30, 3, &["Jinx"]),
+            observation("player-4", "14.1", 40, 4, &["Jinx"]),
+            observation("player-5", "14.1", 110, 1, &["Ahri"]),
+            observation("player-6", "14.1", 120, 2, &["Ahri"]),
+            observation("player-7", "14.1", 130, 3, &["Jinx"]),
+            observation("player-8", "14.1", 140, 4, &["Jinx"]),
+            observation("player-9", "14.1", 150, 1, &["Neeko"]),
+            observation("player-10", "14.1", 160, 7, &["Vi"]),
+            observation("player-11", "14.1", 170, 8, &["Vi"]),
+        ];
+        let summaries = summarize_compositions(&observations, 100);
+
+        let candidates = emerging_candidates(&summaries);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].composition.to_string(), "Ahri");
+        assert_eq!(candidates[0].play_count, 2);
+        assert_eq!(candidates[0].average_placement, 1.5);
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::env;
 use std::error::Error;
 use std::io;
 
-use tft_nowcasting::analysis::summarize_compositions;
+use tft_nowcasting::analysis::{emerging_candidates, summarize_compositions};
 use tft_nowcasting::api::RiotApiClient;
 use tft_nowcasting::audit::audit_cached_matches;
 use tft_nowcasting::dataset::load_standard_ranked_dataset;
@@ -44,21 +44,7 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
     let store = DataStore::new("data");
     let dataset = load_standard_ranked_dataset(&store, &region)?;
     let summaries = summarize_compositions(&dataset.observations, ANALYSIS_WINDOW_SIZE_MS);
-    let latest_window = summaries.iter().map(|summary| summary.window).max();
-    let mut fastest_growing: Vec<_> = summaries
-        .iter()
-        .filter(|summary| Some(summary.window) == latest_window)
-        .collect();
-
-    fastest_growing.sort_by(|left, right| {
-        right
-            .usage_rate_change
-            .unwrap_or(f64::NEG_INFINITY)
-            .total_cmp(&left.usage_rate_change.unwrap_or(f64::NEG_INFINITY))
-            .then_with(|| left.patch.cmp(&right.patch))
-            .then_with(|| left.window.cmp(&right.window))
-            .then_with(|| left.composition.cmp(&right.composition))
-    });
+    let candidates = emerging_candidates(&summaries);
 
     println!("Standard ranked analysis ({region})");
     println!("Included matches: {}", dataset.matches);
@@ -68,8 +54,11 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
         "Composition families in 24-hour windows: {}",
         summaries.len()
     );
-    println!("Fastest-growing composition families in the latest window:");
-    for summary in fastest_growing.into_iter().take(10) {
+    println!("Emerging candidates in the latest window:");
+    if candidates.is_empty() {
+        println!("- None met the growth, performance, and minimum-play filters");
+    }
+    for summary in candidates.into_iter().take(10) {
         let usage_change = summary
             .usage_rate_change
             .map(|change| format!("{:+.1} pp", change * 100.0))
