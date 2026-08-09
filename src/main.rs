@@ -2,7 +2,9 @@ use std::env;
 use std::error::Error;
 use std::io;
 
-use tft_nowcasting::analysis::{early_adopters, emerging_candidates, summarize_compositions};
+use tft_nowcasting::analysis::{
+    early_adopters, emerging_candidates, emerging_events, summarize_compositions, summarize_scouts,
+};
 use tft_nowcasting::api::RiotApiClient;
 use tft_nowcasting::audit::audit_cached_matches;
 use tft_nowcasting::dataset::load_standard_ranked_dataset;
@@ -44,8 +46,14 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
     let store = DataStore::new("data");
     let dataset = load_standard_ranked_dataset(&store, &region)?;
     let summaries = summarize_compositions(&dataset.observations, ANALYSIS_WINDOW_SIZE_MS);
+    let historical_events = emerging_events(&summaries);
+    let adopters = early_adopters(
+        &dataset.observations,
+        &historical_events,
+        ANALYSIS_WINDOW_SIZE_MS,
+    );
+    let scouts = summarize_scouts(&adopters);
     let candidates = emerging_candidates(&summaries);
-    let adopters = early_adopters(&dataset.observations, &candidates, ANALYSIS_WINDOW_SIZE_MS);
 
     println!("Standard ranked analysis ({region})");
     println!("Included matches: {}", dataset.matches);
@@ -79,7 +87,9 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
         let mut matching_adopters = adopters
             .iter()
             .filter(|adopter| {
-                adopter.patch == summary.patch && adopter.composition == summary.composition
+                adopter.patch == summary.patch
+                    && adopter.emergence_window == summary.window
+                    && adopter.composition == summary.composition
             })
             .take(5)
             .peekable();
@@ -95,6 +105,26 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
                 adopter.first_played_at,
             );
         }
+    }
+
+    println!(
+        "Historical replay: {} successful growth event(s), {} early-adopter signal(s)",
+        historical_events.len(),
+        adopters.len()
+    );
+    println!("Scout leaderboard:");
+    if scouts.is_empty() {
+        println!("- No historical scout signals yet");
+    }
+    for scout in scouts.into_iter().take(10) {
+        println!(
+            "- {} — {} successful signal(s) across {} patch(es), {} early game(s), {:.2} average placement",
+            scout.player_id,
+            scout.successful_signals,
+            scout.patches,
+            scout.early_games,
+            scout.average_placement,
+        );
     }
 
     Ok(())

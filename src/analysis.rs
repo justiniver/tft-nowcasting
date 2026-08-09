@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::model::{Composition, MatchObservation};
 
@@ -24,9 +24,20 @@ pub struct EarlyAdopter {
     pub player_id: String,
     pub patch: String,
     pub window: TimeWindow,
+    pub emergence_window: TimeWindow,
     pub composition: Composition,
     pub play_count: usize,
     pub first_played_at: u64,
+    pub average_placement: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoutSummary {
+    pub player_id: String,
+    pub successful_signals: usize,
+    pub patches: usize,
+    pub early_games: usize,
+    pub first_signal_at: u64,
     pub average_placement: f64,
 }
 
@@ -80,6 +91,7 @@ struct CandidateWindow {
     patch: String,
     composition: Composition,
     previous_window: TimeWindow,
+    emergence_window: TimeWindow,
 }
 
 #[derive(PartialEq, Eq, Hash)]
@@ -87,6 +99,7 @@ struct AdopterGroup {
     player_id: String,
     patch: String,
     window: TimeWindow,
+    emergence_window: TimeWindow,
     composition: Composition,
 }
 
@@ -95,6 +108,15 @@ struct AdopterAccumulator {
     play_count: usize,
     placement_total: u64,
     first_played_at: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+struct ScoutAccumulator {
+    successful_signals: usize,
+    early_games: usize,
+    placement_total: f64,
+    first_signal_at: Option<u64>,
+    patches: HashSet<String>,
 }
 
 /// Groups observations into similar composition families and calculates basic
@@ -183,32 +205,43 @@ pub fn summarize_compositions(
 /// better. This is an intentionally small-sample exploratory filter.
 pub fn emerging_candidates(summaries: &[CompositionSummary]) -> Vec<&CompositionSummary> {
     let latest_window = summaries.iter().map(|summary| summary.window).max();
-    let mut candidates: Vec<_> = summaries
+    emerging_events(summaries)
+        .into_iter()
+        .filter(|summary| Some(summary.window) == latest_window)
+        .collect()
+}
+
+/// Applies the emerging-candidate rules to every historical window.
+pub fn emerging_events(summaries: &[CompositionSummary]) -> Vec<&CompositionSummary> {
+    let mut events: Vec<_> = summaries
         .iter()
         .filter(|summary| {
-            Some(summary.window) == latest_window
-                && summary.play_count >= MINIMUM_EMERGING_PLAYS
+            summary.play_count >= MINIMUM_EMERGING_PLAYS
                 && summary.average_placement <= MAXIMUM_EMERGING_AVERAGE_PLACEMENT
                 && summary.usage_rate_change.is_some_and(|change| change > 0.0)
         })
         .collect();
 
-    candidates.sort_by(|left, right| {
-        right
-            .usage_rate_change
-            .expect("candidates should have usage growth")
-            .total_cmp(
-                &left
+    events.sort_by(|left, right| {
+        left.window
+            .cmp(&right.window)
+            .then_with(|| left.patch.cmp(&right.patch))
+            .then_with(|| {
+                right
                     .usage_rate_change
-                    .expect("candidates should have usage growth"),
-            )
+                    .expect("events should have usage growth")
+                    .total_cmp(
+                        &left
+                            .usage_rate_change
+                            .expect("events should have usage growth"),
+                    )
+            })
             .then_with(|| left.average_placement.total_cmp(&right.average_placement))
             .then_with(|| right.play_count.cmp(&left.play_count))
-            .then_with(|| left.patch.cmp(&right.patch))
             .then_with(|| left.composition.cmp(&right.composition))
     });
 
-    candidates
+    events
 }
 
 /// Finds players who used an emerging family in its previous populated window.
@@ -236,6 +269,7 @@ pub fn early_adopters(
                 patch: candidate.patch.clone(),
                 composition: candidate.composition.clone(),
                 previous_window,
+                emergence_window: candidate.window,
             })
         })
         .collect();
@@ -269,6 +303,7 @@ pub fn early_adopters(
                 player_id: observation.player_id.clone(),
                 patch: observation.patch.clone(),
                 window,
+                emergence_window: candidate.emergence_window,
                 composition: representative.clone(),
             };
             let accumulator = grouped.entry(group).or_default();
@@ -290,6 +325,7 @@ pub fn early_adopters(
             player_id: group.player_id,
             patch: group.patch,
             window: group.window,
+            emergence_window: group.emergence_window,
             composition: group.composition,
             play_count: accumulator.play_count,
             first_played_at: accumulator
@@ -300,8 +336,9 @@ pub fn early_adopters(
         .collect();
 
     adopters.sort_by(|left, right| {
-        left.patch
-            .cmp(&right.patch)
+        left.emergence_window
+            .cmp(&right.emergence_window)
+            .then_with(|| left.patch.cmp(&right.patch))
             .then_with(|| left.composition.cmp(&right.composition))
             .then_with(|| left.average_placement.total_cmp(&right.average_placement))
             .then_with(|| left.first_played_at.cmp(&right.first_played_at))
@@ -309,6 +346,52 @@ pub fn early_adopters(
     });
 
     adopters
+}
+
+/// Ranks players by repeated successful early-adoption signals.
+pub fn summarize_scouts(adopters: &[EarlyAdopter]) -> Vec<ScoutSummary> {
+    let mut grouped: HashMap<String, ScoutAccumulator> = HashMap::new();
+
+    for adopter in adopters {
+        let accumulator = grouped.entry(adopter.player_id.clone()).or_default();
+        accumulator.successful_signals += 1;
+        accumulator.early_games += adopter.play_count;
+        accumulator.placement_total += adopter.average_placement * adopter.play_count as f64;
+        accumulator.first_signal_at = Some(
+            accumulator
+                .first_signal_at
+                .map_or(adopter.first_played_at, |timestamp| {
+                    timestamp.min(adopter.first_played_at)
+                }),
+        );
+        accumulator.patches.insert(adopter.patch.clone());
+    }
+
+    let mut scouts: Vec<_> = grouped
+        .into_iter()
+        .map(|(player_id, accumulator)| ScoutSummary {
+            player_id,
+            successful_signals: accumulator.successful_signals,
+            patches: accumulator.patches.len(),
+            early_games: accumulator.early_games,
+            first_signal_at: accumulator
+                .first_signal_at
+                .expect("a scout should have at least one signal"),
+            average_placement: accumulator.placement_total / accumulator.early_games as f64,
+        })
+        .collect();
+
+    scouts.sort_by(|left, right| {
+        right
+            .successful_signals
+            .cmp(&left.successful_signals)
+            .then_with(|| right.patches.cmp(&left.patches))
+            .then_with(|| left.average_placement.total_cmp(&right.average_placement))
+            .then_with(|| left.first_signal_at.cmp(&right.first_signal_at))
+            .then_with(|| left.player_id.cmp(&right.player_id))
+    });
+
+    scouts
 }
 
 fn add_usage_rate_changes(summaries: &mut [CompositionSummary]) {
@@ -401,8 +484,11 @@ fn assign_composition_families(
 
 #[cfg(test)]
 mod tests {
-    use super::{early_adopters, emerging_candidates, summarize_compositions};
-    use crate::model::{MatchObservation, UnitObservation};
+    use super::{
+        CompositionSummary, EarlyAdopter, TimeWindow, early_adopters, emerging_candidates,
+        emerging_events, summarize_compositions, summarize_scouts,
+    };
+    use crate::model::{Composition, MatchObservation, UnitObservation};
 
     fn observation(
         player_id: &str,
@@ -685,9 +771,89 @@ mod tests {
         assert_eq!(adopters.len(), 1);
         assert_eq!(adopters[0].player_id, "player-1");
         assert_eq!(adopters[0].window.start, 0);
+        assert_eq!(adopters[0].emergence_window.start, 100);
         assert_eq!(adopters[0].play_count, 1);
         assert_eq!(adopters[0].first_played_at, 10);
         assert_eq!(adopters[0].average_placement, 1.0);
+    }
+
+    #[test]
+    fn historical_events_include_windows_before_the_latest_one() {
+        let summaries = vec![
+            CompositionSummary {
+                patch: "14.1".to_owned(),
+                window: TimeWindow::containing(110, 100),
+                composition: Composition::from_units(&[UnitObservation::new("Ahri", 1, vec![])]),
+                play_count: 2,
+                usage_rate: 0.25,
+                usage_rate_change: Some(0.10),
+                average_placement: 3.0,
+                top_four_rate: 0.5,
+            },
+            CompositionSummary {
+                patch: "14.1".to_owned(),
+                window: TimeWindow::containing(210, 100),
+                composition: Composition::from_units(&[UnitObservation::new("Jinx", 1, vec![])]),
+                play_count: 2,
+                usage_rate: 0.30,
+                usage_rate_change: Some(0.15),
+                average_placement: 2.0,
+                top_four_rate: 1.0,
+            },
+        ];
+
+        let events = emerging_events(&summaries);
+        let latest = emerging_candidates(&summaries);
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].composition.to_string(), "Jinx");
+    }
+
+    #[test]
+    fn ranks_scouts_by_repeated_signals_across_patches() {
+        let composition = Composition::from_units(&[UnitObservation::new("Ahri", 1, vec![])]);
+        let adopters = vec![
+            EarlyAdopter {
+                player_id: "player-a".to_owned(),
+                patch: "14.1".to_owned(),
+                window: TimeWindow::containing(10, 100),
+                emergence_window: TimeWindow::containing(110, 100),
+                composition: composition.clone(),
+                play_count: 1,
+                first_played_at: 10,
+                average_placement: 2.0,
+            },
+            EarlyAdopter {
+                player_id: "player-a".to_owned(),
+                patch: "14.2".to_owned(),
+                window: TimeWindow::containing(210, 100),
+                emergence_window: TimeWindow::containing(310, 100),
+                composition: composition.clone(),
+                play_count: 2,
+                first_played_at: 210,
+                average_placement: 4.0,
+            },
+            EarlyAdopter {
+                player_id: "player-b".to_owned(),
+                patch: "14.1".to_owned(),
+                window: TimeWindow::containing(10, 100),
+                emergence_window: TimeWindow::containing(110, 100),
+                composition,
+                play_count: 1,
+                first_played_at: 20,
+                average_placement: 1.0,
+            },
+        ];
+
+        let scouts = summarize_scouts(&adopters);
+
+        assert_eq!(scouts.len(), 2);
+        assert_eq!(scouts[0].player_id, "player-a");
+        assert_eq!(scouts[0].successful_signals, 2);
+        assert_eq!(scouts[0].patches, 2);
+        assert_eq!(scouts[0].early_games, 3);
+        assert_close(scouts[0].average_placement, 10.0 / 3.0);
     }
 
     #[test]
