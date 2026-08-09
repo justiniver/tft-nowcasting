@@ -10,6 +10,9 @@ pub struct CompositionSummary {
     pub window: TimeWindow,
     pub composition: Composition,
     pub play_count: usize,
+    pub usage_rate: f64,
+    /// Percentage-point change from the previous populated window in the patch.
+    pub usage_rate_change: Option<f64>,
     pub average_placement: f64,
     pub top_four_rate: f64,
 }
@@ -61,8 +64,8 @@ struct PlacementAccumulator {
 }
 
 /// Groups observations into similar composition families and calculates basic
-/// statistics for each family. The displayed composition is the family's most
-/// common exact board, with alphabetical ordering used to break ties.
+/// statistics for each family. The displayed composition is the family's
+/// first-seen exact board, with alphabetical ordering used to break ties.
 ///
 /// `&[MatchObservation]` is a borrowed slice: this function can read the
 /// observations without taking ownership of them. Time windows are fixed and
@@ -78,6 +81,7 @@ pub fn summarize_compositions(
 
     let families = assign_composition_families(observations);
     let mut grouped: HashMap<CompositionGroup, PlacementAccumulator> = HashMap::new();
+    let mut window_totals: HashMap<(String, TimeWindow), usize> = HashMap::new();
 
     for observation in observations {
         let exact_composition = PatchComposition {
@@ -88,11 +92,15 @@ pub fn summarize_compositions(
             .get(&exact_composition)
             .expect("every observed composition should have a family")
             .clone();
+        let window = TimeWindow::containing(observation.timestamp, window_size);
         let group = CompositionGroup {
             patch: observation.patch.clone(),
-            window: TimeWindow::containing(observation.timestamp, window_size),
+            window,
             composition: representative,
         };
+        *window_totals
+            .entry((observation.patch.clone(), window))
+            .or_default() += 1;
         let accumulator = grouped.entry(group).or_default();
         accumulator.play_count += 1;
         accumulator.placement_total += u64::from(observation.placement);
@@ -103,13 +111,22 @@ pub fn summarize_compositions(
 
     let mut summaries: Vec<CompositionSummary> = grouped
         .into_iter()
-        .map(|(group, accumulator)| CompositionSummary {
-            patch: group.patch,
-            window: group.window,
-            composition: group.composition,
-            play_count: accumulator.play_count,
-            average_placement: accumulator.placement_total as f64 / accumulator.play_count as f64,
-            top_four_rate: accumulator.top_four_count as f64 / accumulator.play_count as f64,
+        .map(|(group, accumulator)| {
+            let observations_in_window = window_totals
+                .get(&(group.patch.clone(), group.window))
+                .expect("every composition group should have a window total");
+
+            CompositionSummary {
+                patch: group.patch,
+                window: group.window,
+                composition: group.composition,
+                play_count: accumulator.play_count,
+                usage_rate: accumulator.play_count as f64 / *observations_in_window as f64,
+                usage_rate_change: None,
+                average_placement: accumulator.placement_total as f64
+                    / accumulator.play_count as f64,
+                top_four_rate: accumulator.top_four_count as f64 / accumulator.play_count as f64,
+            }
         })
         .collect();
 
@@ -122,27 +139,67 @@ pub fn summarize_compositions(
             .then_with(|| right.play_count.cmp(&left.play_count))
             .then_with(|| left.composition.cmp(&right.composition))
     });
+    add_usage_rate_changes(&mut summaries);
 
     summaries
+}
+
+fn add_usage_rate_changes(summaries: &mut [CompositionSummary]) {
+    let mut previous_patch = None;
+    let mut previous_rates: HashMap<Composition, f64> = HashMap::new();
+    let mut start = 0;
+
+    while start < summaries.len() {
+        let patch = summaries[start].patch.clone();
+        let window = summaries[start].window;
+        let mut end = start + 1;
+        while end < summaries.len()
+            && summaries[end].patch == patch
+            && summaries[end].window == window
+        {
+            end += 1;
+        }
+
+        let summaries_in_window = &mut summaries[start..end];
+        if previous_patch.as_deref() == Some(patch.as_str()) {
+            for summary in summaries_in_window.iter_mut() {
+                let previous_rate = previous_rates
+                    .get(&summary.composition)
+                    .copied()
+                    .unwrap_or(0.0);
+                summary.usage_rate_change = Some(summary.usage_rate - previous_rate);
+            }
+        }
+
+        previous_rates = summaries_in_window
+            .iter()
+            .map(|summary| (summary.composition.clone(), summary.usage_rate))
+            .collect();
+        previous_patch = Some(patch);
+        start = end;
+    }
 }
 
 fn assign_composition_families(
     observations: &[MatchObservation],
 ) -> HashMap<PatchComposition, Composition> {
-    let mut exact_counts: HashMap<PatchComposition, usize> = HashMap::new();
+    let mut first_seen: HashMap<PatchComposition, u64> = HashMap::new();
     for observation in observations {
         let exact_composition = PatchComposition {
             patch: observation.patch.clone(),
             composition: Composition::from_units(&observation.units),
         };
-        *exact_counts.entry(exact_composition).or_default() += 1;
+        first_seen
+            .entry(exact_composition)
+            .and_modify(|timestamp| *timestamp = (*timestamp).min(observation.timestamp))
+            .or_insert(observation.timestamp);
     }
 
-    let mut exact_compositions: Vec<_> = exact_counts.into_iter().collect();
-    exact_compositions.sort_by(|(left, left_count), (right, right_count)| {
+    let mut exact_compositions: Vec<_> = first_seen.into_iter().collect();
+    exact_compositions.sort_by(|(left, left_timestamp), (right, right_timestamp)| {
         left.patch
             .cmp(&right.patch)
-            .then_with(|| right_count.cmp(left_count))
+            .then_with(|| left_timestamp.cmp(right_timestamp))
             .then_with(|| left.composition.cmp(&right.composition))
     });
 
@@ -248,9 +305,11 @@ mod tests {
         assert_eq!(summaries[1].patch, "14.1");
         assert_eq!(summaries[1].window.start, 100);
         assert_eq!(summaries[1].play_count, 1);
+        assert_eq!(summaries[1].usage_rate_change, Some(0.0));
         assert_eq!(summaries[2].patch, "14.2");
         assert_eq!(summaries[2].window.start, 0);
         assert_eq!(summaries[2].play_count, 1);
+        assert_eq!(summaries[2].usage_rate_change, None);
     }
 
     #[test]
@@ -366,6 +425,73 @@ mod tests {
     }
 
     #[test]
+    fn later_popularity_does_not_relabel_an_earlier_family() {
+        let early_board = ["Ahri", "Jinx", "Neeko", "Vi", "Yasuo"];
+        let later_board = ["Ahri", "Jinx", "Neeko", "Vi", "Zed"];
+        let observations = vec![
+            observation("player-1", "14.1", 10, 2, &early_board),
+            observation("player-2", "14.1", 110, 3, &later_board),
+            observation("player-3", "14.1", 120, 4, &later_board),
+            observation("player-4", "14.1", 130, 5, &later_board),
+        ];
+
+        let summaries = summarize_compositions(&observations, 100);
+
+        assert_eq!(
+            summaries[0].composition.to_string(),
+            "Ahri, Jinx, Neeko, Vi, Yasuo"
+        );
+        assert_eq!(summaries[1].composition, summaries[0].composition);
+    }
+
+    #[test]
+    fn calculates_usage_rate_and_change_between_populated_windows() {
+        let observations = vec![
+            observation("player-1", "14.1", 10, 1, &["Ahri"]),
+            observation("player-2", "14.1", 20, 2, &["Ahri"]),
+            observation("player-3", "14.1", 30, 3, &["Jinx"]),
+            observation("player-4", "14.1", 110, 4, &["Ahri"]),
+            observation("player-5", "14.1", 120, 5, &["Jinx"]),
+            observation("player-6", "14.1", 130, 6, &["Jinx"]),
+            observation("player-7", "14.1", 140, 7, &["Jinx"]),
+        ];
+
+        let summaries = summarize_compositions(&observations, 100);
+
+        assert_close(summaries[0].usage_rate, 2.0 / 3.0);
+        assert_eq!(summaries[0].usage_rate_change, None);
+        assert_close(summaries[1].usage_rate, 1.0 / 3.0);
+        assert_eq!(summaries[1].usage_rate_change, None);
+        assert_close(summaries[2].usage_rate, 3.0 / 4.0);
+        assert_close(
+            summaries[2]
+                .usage_rate_change
+                .expect("the second window should have a comparison"),
+            5.0 / 12.0,
+        );
+        assert_close(summaries[3].usage_rate, 1.0 / 4.0);
+        assert_close(
+            summaries[3]
+                .usage_rate_change
+                .expect("the second window should have a comparison"),
+            -5.0 / 12.0,
+        );
+    }
+
+    #[test]
+    fn treats_a_family_missing_from_the_previous_window_as_zero_usage() {
+        let observations = vec![
+            observation("player-1", "14.1", 10, 1, &["Ahri"]),
+            observation("player-2", "14.1", 110, 2, &["Jinx"]),
+        ];
+
+        let summaries = summarize_compositions(&observations, 100);
+
+        assert_eq!(summaries[0].usage_rate_change, None);
+        assert_eq!(summaries[1].usage_rate_change, Some(1.0));
+    }
+
+    #[test]
     fn empty_input_produces_no_summaries() {
         assert!(summarize_compositions(&[], 100).is_empty());
     }
@@ -374,5 +500,9 @@ mod tests {
     #[should_panic(expected = "time window size must be greater than zero")]
     fn rejects_a_zero_sized_time_window() {
         let _ = summarize_compositions(&[], 0);
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < 1e-10);
     }
 }
