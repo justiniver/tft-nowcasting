@@ -23,6 +23,12 @@ Collect a small cached dataset from three Challenger players:
 cargo run -- ingest
 ```
 
+Optionally provide the number of players and recent matches per player:
+
+```bash
+cargo run -- ingest 10 10
+```
+
 Audit the cached dataset without making network requests:
 
 ```bash

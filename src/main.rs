@@ -29,7 +29,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some("api-smoke") => run_api_smoke_test(),
         Some("analyze") => run_cached_analysis(),
         Some("audit") => run_dataset_audit(),
-        Some("ingest") => run_ingestion(),
+        Some("ingest") => run_ingestion(ingestion_config_from_args(env::args().skip(2))?),
         Some(command) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unknown command {command:?}; try `cargo run -- ingest`"),
@@ -117,11 +117,15 @@ fn run_dataset_audit() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_ingestion() -> Result<(), Box<dyn Error>> {
+fn run_ingestion(config: IngestionConfig) -> Result<(), Box<dyn Error>> {
     let client = RiotApiClient::from_env()?;
     let store = DataStore::new("data");
-    let report = ingest(&client, &store, IngestionConfig::default())?;
+    let report = ingest(&client, &store, config)?;
 
+    println!(
+        "Requested up to {} player(s) and {} match(es) per player",
+        config.player_limit, config.matches_per_player
+    );
     println!(
         "Saved ladder snapshot: {}",
         report.ladder_snapshot.display()
@@ -133,6 +137,48 @@ fn run_ingestion() -> Result<(), Box<dyn Error>> {
     println!("Player-match observations: {}", report.observations);
 
     Ok(())
+}
+
+fn ingestion_config_from_args(
+    mut args: impl Iterator<Item = String>,
+) -> Result<IngestionConfig, io::Error> {
+    let defaults = IngestionConfig::default();
+    let player_limit = match args.next() {
+        Some(value) => value.parse::<usize>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("player limit must be a positive integer, got {value:?}"),
+            )
+        })?,
+        None => defaults.player_limit,
+    };
+    let matches_per_player = match args.next() {
+        Some(value) => value.parse::<u8>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("matches per player must be a positive integer, got {value:?}"),
+            )
+        })?,
+        None => defaults.matches_per_player,
+    };
+
+    if player_limit == 0 || matches_per_player == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ingestion limits must be greater than zero",
+        ));
+    }
+    if let Some(value) = args.next() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unexpected ingestion argument {value:?}"),
+        ));
+    }
+
+    Ok(IngestionConfig {
+        player_limit,
+        matches_per_player,
+    })
 }
 
 fn run_local_demo() {
@@ -269,4 +315,26 @@ fn sample_observations() -> Vec<MatchObservation> {
             vec!["Magic Wand"],
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ingestion_config_from_args;
+
+    #[test]
+    fn ingestion_arguments_override_the_defaults() {
+        let config = ingestion_config_from_args(["10".to_owned(), "20".to_owned()].into_iter())
+            .expect("valid limits should parse");
+
+        assert_eq!(config.player_limit, 10);
+        assert_eq!(config.matches_per_player, 20);
+    }
+
+    #[test]
+    fn ingestion_arguments_reject_zero_limits() {
+        let error = ingestion_config_from_args(["0".to_owned()].into_iter())
+            .expect_err("zero should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
 }
