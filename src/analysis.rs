@@ -5,6 +5,7 @@ use crate::model::{Composition, MatchObservation};
 const MINIMUM_CHAMPION_OVERLAP: f64 = 0.8;
 const MINIMUM_EMERGING_PLAYS: usize = 2;
 const MAXIMUM_EMERGING_AVERAGE_PLACEMENT: f64 = 4.5;
+const MINIMUM_ESTABLISHED_SIGNALS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompositionSummary {
@@ -38,6 +39,17 @@ pub struct ScoutSummary {
     pub patches: usize,
     pub early_games: usize,
     pub first_signal_at: u64,
+    pub average_placement: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoutForecast {
+    pub patch: String,
+    pub window: TimeWindow,
+    pub composition: Composition,
+    pub scout_count: usize,
+    pub play_count: usize,
+    pub scout_play_rate: f64,
     pub average_placement: f64,
 }
 
@@ -117,6 +129,13 @@ struct ScoutAccumulator {
     placement_total: f64,
     first_signal_at: Option<u64>,
     patches: HashSet<String>,
+}
+
+#[derive(Debug, Default)]
+struct ForecastAccumulator {
+    play_count: usize,
+    placement_total: u64,
+    scouts: HashSet<String>,
 }
 
 /// Groups observations into similar composition families and calculates basic
@@ -394,6 +413,89 @@ pub fn summarize_scouts(adopters: &[EarlyAdopter]) -> Vec<ScoutSummary> {
     scouts
 }
 
+/// Groups the latest boards of players with at least two successful signals.
+pub fn forecast_from_scouts(
+    observations: &[MatchObservation],
+    scouts: &[ScoutSummary],
+    window_size: u64,
+) -> Vec<ScoutForecast> {
+    assert!(
+        window_size > 0,
+        "time window size must be greater than zero"
+    );
+
+    let Some(latest_window) = observations
+        .iter()
+        .map(|observation| TimeWindow::containing(observation.timestamp, window_size))
+        .max()
+    else {
+        return Vec::new();
+    };
+    let established_scouts: HashSet<&str> = scouts
+        .iter()
+        .filter(|scout| scout.successful_signals >= MINIMUM_ESTABLISHED_SIGNALS)
+        .map(|scout| scout.player_id.as_str())
+        .collect();
+    if established_scouts.is_empty() {
+        return Vec::new();
+    }
+
+    let families = assign_composition_families(observations);
+    let mut grouped: HashMap<CompositionGroup, ForecastAccumulator> = HashMap::new();
+    let mut total_scout_plays = 0;
+
+    for observation in observations {
+        let window = TimeWindow::containing(observation.timestamp, window_size);
+        if window != latest_window || !established_scouts.contains(observation.player_id.as_str()) {
+            continue;
+        }
+
+        let exact_composition = PatchComposition {
+            patch: observation.patch.clone(),
+            composition: Composition::from_units(&observation.units),
+        };
+        let representative = families
+            .get(&exact_composition)
+            .expect("every observed composition should have a family")
+            .clone();
+        let group = CompositionGroup {
+            patch: observation.patch.clone(),
+            window,
+            composition: representative,
+        };
+        let accumulator = grouped.entry(group).or_default();
+        accumulator.play_count += 1;
+        accumulator.placement_total += u64::from(observation.placement);
+        accumulator.scouts.insert(observation.player_id.clone());
+        total_scout_plays += 1;
+    }
+
+    let mut forecasts: Vec<_> = grouped
+        .into_iter()
+        .map(|(group, accumulator)| ScoutForecast {
+            patch: group.patch,
+            window: group.window,
+            composition: group.composition,
+            scout_count: accumulator.scouts.len(),
+            play_count: accumulator.play_count,
+            scout_play_rate: accumulator.play_count as f64 / total_scout_plays as f64,
+            average_placement: accumulator.placement_total as f64 / accumulator.play_count as f64,
+        })
+        .collect();
+
+    forecasts.sort_by(|left, right| {
+        right
+            .scout_count
+            .cmp(&left.scout_count)
+            .then_with(|| right.play_count.cmp(&left.play_count))
+            .then_with(|| left.average_placement.total_cmp(&right.average_placement))
+            .then_with(|| left.patch.cmp(&right.patch))
+            .then_with(|| left.composition.cmp(&right.composition))
+    });
+
+    forecasts
+}
+
 fn add_usage_rate_changes(summaries: &mut [CompositionSummary]) {
     let mut previous_patch = None;
     let mut previous_rates: HashMap<Composition, f64> = HashMap::new();
@@ -485,8 +587,9 @@ fn assign_composition_families(
 #[cfg(test)]
 mod tests {
     use super::{
-        CompositionSummary, EarlyAdopter, TimeWindow, early_adopters, emerging_candidates,
-        emerging_events, summarize_compositions, summarize_scouts,
+        CompositionSummary, EarlyAdopter, ScoutSummary, TimeWindow, early_adopters,
+        emerging_candidates, emerging_events, forecast_from_scouts, summarize_compositions,
+        summarize_scouts,
     };
     use crate::model::{Composition, MatchObservation, UnitObservation};
 
@@ -854,6 +957,54 @@ mod tests {
         assert_eq!(scouts[0].patches, 2);
         assert_eq!(scouts[0].early_games, 3);
         assert_close(scouts[0].average_placement, 10.0 / 3.0);
+    }
+
+    #[test]
+    fn forecasts_from_the_latest_boards_of_established_scouts() {
+        let observations = vec![
+            observation("scout-a", "14.1", 110, 2, &["Ahri"]),
+            observation("scout-a", "14.1", 120, 4, &["Ahri"]),
+            observation("scout-b", "14.1", 130, 1, &["Ahri"]),
+            observation("scout-b", "14.1", 140, 5, &["Jinx"]),
+            observation("new-player", "14.1", 150, 1, &["Ahri"]),
+        ];
+        let scouts = vec![
+            ScoutSummary {
+                player_id: "scout-a".to_owned(),
+                successful_signals: 2,
+                patches: 1,
+                early_games: 2,
+                first_signal_at: 10,
+                average_placement: 2.0,
+            },
+            ScoutSummary {
+                player_id: "scout-b".to_owned(),
+                successful_signals: 3,
+                patches: 2,
+                early_games: 3,
+                first_signal_at: 20,
+                average_placement: 3.0,
+            },
+            ScoutSummary {
+                player_id: "new-player".to_owned(),
+                successful_signals: 1,
+                patches: 1,
+                early_games: 1,
+                first_signal_at: 30,
+                average_placement: 1.0,
+            },
+        ];
+
+        let forecasts = forecast_from_scouts(&observations, &scouts, 100);
+
+        assert_eq!(forecasts.len(), 2);
+        assert_eq!(forecasts[0].composition.to_string(), "Ahri");
+        assert_eq!(forecasts[0].scout_count, 2);
+        assert_eq!(forecasts[0].play_count, 3);
+        assert_close(forecasts[0].scout_play_rate, 0.75);
+        assert_close(forecasts[0].average_placement, 7.0 / 3.0);
+        assert_eq!(forecasts[1].composition.to_string(), "Jinx");
+        assert_close(forecasts[1].scout_play_rate, 0.25);
     }
 
     #[test]

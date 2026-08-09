@@ -50,7 +50,9 @@ Emerging candidates must be growing, have at least two plays, and average a
 placement of 4.5 or better in the latest window. For each candidate, the report
 also identifies players who used that family in the previous populated window.
 A historical replay ranks players by repeated successful early-adoption signals,
-patch coverage, and their average placement in those early games.
+patch coverage, and their average placement in those early games. Players with
+at least two signals are established scouts; their latest boards form the
+next-window forecast.
 
 The smoke test reads `RIOT_KEY` from `.env`, verifies authentication, fetches a
 Challenger player, retrieves one recent match ID, and converts that match into

@@ -3,7 +3,8 @@ use std::error::Error;
 use std::io;
 
 use tft_nowcasting::analysis::{
-    early_adopters, emerging_candidates, emerging_events, summarize_compositions, summarize_scouts,
+    early_adopters, emerging_candidates, emerging_events, forecast_from_scouts,
+    summarize_compositions, summarize_scouts,
 };
 use tft_nowcasting::api::RiotApiClient;
 use tft_nowcasting::audit::audit_cached_matches;
@@ -53,6 +54,7 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
         ANALYSIS_WINDOW_SIZE_MS,
     );
     let scouts = summarize_scouts(&adopters);
+    let forecasts = forecast_from_scouts(&dataset.observations, &scouts, ANALYSIS_WINDOW_SIZE_MS);
     let candidates = emerging_candidates(&summaries);
 
     println!("Standard ranked analysis ({region})");
@@ -124,6 +126,24 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
             scout.patches,
             scout.early_games,
             scout.average_placement,
+        );
+    }
+
+    println!("Next-window forecast from established scouts' latest boards:");
+    if forecasts.is_empty() {
+        println!("- No established scouts played in the latest window");
+    }
+    for forecast in forecasts.into_iter().take(10) {
+        println!(
+            "- patch {}, window [{}, {}): {} — {} scout(s), {} play(s), {:.1}% of scout plays, {:.2} average placement",
+            forecast.patch,
+            forecast.window.start,
+            forecast.window.end_exclusive,
+            forecast.composition,
+            forecast.scout_count,
+            forecast.play_count,
+            forecast.scout_play_rate * 100.0,
+            forecast.average_placement,
         );
     }
 
