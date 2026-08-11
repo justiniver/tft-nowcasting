@@ -111,7 +111,7 @@ pub fn backfill_set(
     let mut downloaded_matches = 0;
     let mut cached_matches = 0;
 
-    for player in players {
+    for (player_index, player) in players.iter().enumerate() {
         let mut start = 0;
 
         loop {
@@ -125,7 +125,7 @@ pub fn backfill_set(
             let page_len = match_ids.len();
             let mut reached_previous_set = false;
 
-            for match_id in match_ids {
+            for (match_index, match_id) in match_ids.into_iter().enumerate() {
                 let is_new = seen_match_ids.insert(match_id.clone());
                 let (json, downloaded) = if is_new {
                     load_match_json(client, store, &match_id)?
@@ -155,6 +155,15 @@ pub fn backfill_set(
                 ) {
                     reached_previous_set = true;
                     break;
+                }
+
+                let processed = match_index + 1;
+                if processed % 25 == 0 || processed == page_len {
+                    eprintln!(
+                        "Player {}/{} at history offset {start}: {processed}/{page_len} matches ({downloaded_matches} downloaded, {cached_matches} cached)",
+                        player_index + 1,
+                        players.len(),
+                    );
                 }
             }
 

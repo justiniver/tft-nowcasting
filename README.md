@@ -58,7 +58,7 @@ cargo run -- analyze
 
 Ingestion and backfill save original ladder and match JSON under `data/raw/`.
 Match files are reused on later runs instead of being downloaded again. Analysis keeps
-queue 1100 matches, excludes other modes such as Double Up, and groups boards
+Set 17 queue 1100 matches, excludes other modes and sets, and groups boards
 that share at least 80% of the larger board's champions. The analysis reports
 each family's usage share and its change from the previous populated window.
 Emerging candidates must be growing, have at least two plays, and average a

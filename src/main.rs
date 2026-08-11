@@ -15,6 +15,7 @@ use tft_nowcasting::model::{MatchObservation, UnitObservation};
 use tft_nowcasting::storage::DataStore;
 
 const SAMPLE_WINDOW_SIZE: u64 = 300;
+const ANALYSIS_SET_NUMBER: i32 = 17;
 const ANALYSIS_WINDOW_SIZE_MS: u64 = 24 * 60 * 60 * 1_000;
 const DEFAULT_BACKFILL_PLAYER_LIMIT: usize = 10;
 
@@ -48,7 +49,7 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
     let _ = dotenvy::dotenv();
     let region = env::var("RIOT_REGION").unwrap_or_else(|_| "asia".to_owned());
     let store = DataStore::new("data");
-    let dataset = load_standard_ranked_dataset(&store, &region)?;
+    let dataset = load_standard_ranked_dataset(&store, &region, ANALYSIS_SET_NUMBER)?;
     let analysis = CompositionAnalysis::new(&dataset.observations, ANALYSIS_WINDOW_SIZE_MS);
     let summaries = analysis.summarize_compositions();
     let historical_events = emerging_events(&summaries);
@@ -58,9 +59,12 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
     let candidates = emerging_candidates(&summaries);
     let evaluation = evaluate_historical_forecasts_with_analysis(&analysis);
 
-    println!("Standard ranked analysis ({region})");
+    println!("Standard ranked Set {ANALYSIS_SET_NUMBER} analysis ({region})");
     println!("Included matches: {}", dataset.matches);
-    println!("Excluded other-mode matches: {}", dataset.excluded_matches);
+    println!(
+        "Excluded other-mode or other-set matches: {}",
+        dataset.excluded_matches
+    );
     println!("Player-match observations: {}", dataset.observations.len());
     println!(
         "Composition families in 24-hour windows: {}",

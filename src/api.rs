@@ -1,6 +1,7 @@
 use std::env;
 use std::error::Error;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
@@ -13,12 +14,14 @@ use crate::model::{MatchObservation, UnitObservation};
 pub type ApiResult<T> = Result<T, Box<dyn Error>>;
 
 const MAX_RATE_LIMIT_RETRIES: u8 = 3;
+const REQUEST_INTERVAL: Duration = Duration::from_millis(1_250);
 
 pub struct RiotApiClient {
     http: Client,
     api_key: String,
     platform: String,
     region: String,
+    next_request_at: Mutex<Instant>,
 }
 
 impl RiotApiClient {
@@ -30,6 +33,7 @@ impl RiotApiClient {
             api_key: env::var("RIOT_KEY")?,
             platform: env::var("RIOT_PLATFORM").unwrap_or_else(|_| "jp1".to_owned()),
             region: env::var("RIOT_REGION").unwrap_or_else(|_| "asia".to_owned()),
+            next_request_at: Mutex::new(Instant::now()),
         })
     }
 
@@ -83,6 +87,7 @@ impl RiotApiClient {
 
     fn get_text(&self, url: &str) -> ApiResult<String> {
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
+            self.wait_for_request_slot();
             let response = self
                 .http
                 .get(url)
@@ -107,6 +112,20 @@ impl RiotApiClient {
         }
 
         unreachable!("the request loop always returns after its final attempt")
+    }
+
+    fn wait_for_request_slot(&self) {
+        let mut next_request_at = self
+            .next_request_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = Instant::now();
+
+        if *next_request_at > now {
+            std::thread::sleep(*next_request_at - now);
+        }
+
+        *next_request_at = Instant::now() + REQUEST_INTERVAL;
     }
 }
 

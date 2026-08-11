@@ -20,6 +20,7 @@ pub struct StandardRankedDataset {
 pub fn load_standard_ranked_dataset(
     store: &DataStore,
     region: &str,
+    set_number: i32,
 ) -> DatasetResult<StandardRankedDataset> {
     let mut dataset = StandardRankedDataset::default();
 
@@ -32,7 +33,9 @@ pub fn load_standard_ranked_dataset(
             )
         })?;
 
-        if riot_match.queue_id() != STANDARD_RANKED_QUEUE_ID {
+        if riot_match.queue_id() != STANDARD_RANKED_QUEUE_ID
+            || riot_match.set_number() != set_number
+        {
             dataset.excluded_matches += 1;
             continue;
         }
@@ -54,7 +57,7 @@ mod tests {
     use super::load_standard_ranked_dataset;
 
     #[test]
-    fn loads_ranked_matches_and_excludes_other_queues() {
+    fn loads_ranked_matches_from_the_requested_set() {
         let root = temporary_data_root();
         let store = DataStore::new(&root);
         let standard_match = include_str!("../tests/fixtures/sample_match.json");
@@ -65,6 +68,9 @@ mod tests {
                 "\"tft_game_type\": \"standard\"",
                 "\"tft_game_type\": \"pairs\"",
             );
+        let previous_set_match = standard_match
+            .replace("JP1_123", "JP1_789")
+            .replace("\"tft_set_number\": 17", "\"tft_set_number\": 16");
 
         store
             .save_match_json("asia", "JP1_123", standard_match)
@@ -72,11 +78,15 @@ mod tests {
         store
             .save_match_json("asia", "JP1_456", &double_up_match)
             .expect("Double Up fixture should be saved");
+        store
+            .save_match_json("asia", "JP1_789", &previous_set_match)
+            .expect("previous-set fixture should be saved");
 
-        let dataset = load_standard_ranked_dataset(&store, "asia").expect("dataset should load");
+        let dataset =
+            load_standard_ranked_dataset(&store, "asia", 17).expect("dataset should load");
 
         assert_eq!(dataset.matches, 1);
-        assert_eq!(dataset.excluded_matches, 1);
+        assert_eq!(dataset.excluded_matches, 2);
         assert_eq!(dataset.observations.len(), 1);
         assert_eq!(dataset.observations[0].player_id, "player-1");
 
@@ -86,7 +96,7 @@ mod tests {
     #[test]
     fn missing_cache_produces_an_empty_dataset() {
         let root = temporary_data_root();
-        let dataset = load_standard_ranked_dataset(&DataStore::new(root), "asia")
+        let dataset = load_standard_ranked_dataset(&DataStore::new(root), "asia", 17)
             .expect("a missing cache should be valid");
 
         assert_eq!(dataset.matches, 0);
