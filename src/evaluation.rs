@@ -1,8 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::analysis::{
-    CompositionSummary, TimeWindow, early_adopters, emerging_events, forecast_from_scouts,
-    summarize_compositions, summarize_scouts,
+    CompositionAnalysis, CompositionSummary, TimeWindow, emerging_events, summarize_scouts,
 };
 use crate::model::{Composition, MatchObservation};
 
@@ -58,13 +57,18 @@ pub fn evaluate_historical_forecasts(
     observations: &[MatchObservation],
     window_size: u64,
 ) -> HistoricalForecastEvaluation {
-    assert!(
-        window_size > 0,
-        "time window size must be greater than zero"
-    );
+    let analysis = CompositionAnalysis::new(observations, window_size);
+    evaluate_historical_forecasts_with_analysis(&analysis)
+}
 
-    let full_summaries = summarize_compositions(observations, window_size);
+pub fn evaluate_historical_forecasts_with_analysis(
+    analysis: &CompositionAnalysis<'_>,
+) -> HistoricalForecastEvaluation {
+    let observations = analysis.observations();
+    let window_size = analysis.window_size();
+    let full_summaries = analysis.summarize_compositions();
     let target_events = emerging_events(&full_summaries);
+    let all_adopters = analysis.early_adopters(&target_events);
     let mut windows_by_patch: HashMap<String, HashSet<TimeWindow>> = HashMap::new();
     for observation in observations {
         windows_by_patch
@@ -91,17 +95,16 @@ pub fn evaluate_historical_forecasts(
             }
 
             evaluation.event_windows += 1;
-            let training_observations: Vec<_> = observations
+            let historical_adopters: Vec<_> = all_adopters
                 .iter()
-                .filter(|observation| observation.timestamp < forecast_window.end_exclusive)
+                .filter(|adopter| {
+                    adopter.emergence_window.end_exclusive <= forecast_window.end_exclusive
+                })
                 .cloned()
                 .collect();
-            let training_summaries = summarize_compositions(&training_observations, window_size);
-            let historical_events = emerging_events(&training_summaries);
-            let adopters = early_adopters(&training_observations, &historical_events, window_size);
-            let scouts = summarize_scouts(&adopters);
-            let forecasts = forecast_from_scouts(&training_observations, &scouts, window_size);
-            let current_summaries: Vec<_> = training_summaries
+            let scouts = summarize_scouts(&historical_adopters);
+            let forecasts = analysis.forecast_from_scouts_in_window(&scouts, forecast_window);
+            let current_summaries: Vec<_> = full_summaries
                 .iter()
                 .filter(|summary| summary.patch == patch && summary.window == forecast_window)
                 .collect();
@@ -154,9 +157,10 @@ fn performance_baseline<'a>(summaries: &[&'a CompositionSummary]) -> Option<&'a 
 
 #[cfg(test)]
 mod tests {
+    use crate::analysis::CompositionAnalysis;
     use crate::model::{MatchObservation, UnitObservation};
 
-    use super::evaluate_historical_forecasts;
+    use super::{evaluate_historical_forecasts, evaluate_historical_forecasts_with_analysis};
 
     #[test]
     fn empty_dataset_produces_an_empty_evaluation() {
@@ -189,6 +193,11 @@ mod tests {
         ];
 
         let evaluation = evaluate_historical_forecasts(&observations, 100);
+        let analysis = CompositionAnalysis::new(&observations, 100);
+        assert_eq!(
+            evaluation,
+            evaluate_historical_forecasts_with_analysis(&analysis)
+        );
 
         assert_eq!(evaluation.event_windows, 3);
         assert_eq!(evaluation.scout.predictions, 1);

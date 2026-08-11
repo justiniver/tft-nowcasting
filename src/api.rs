@@ -2,13 +2,17 @@ use std::env;
 use std::error::Error;
 use std::time::Duration;
 
+use reqwest::StatusCode;
 use reqwest::blocking::Client;
+use reqwest::header::RETRY_AFTER;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::model::{MatchObservation, UnitObservation};
 
 pub type ApiResult<T> = Result<T, Box<dyn Error>>;
+
+const MAX_RATE_LIMIT_RETRIES: u8 = 3;
 
 pub struct RiotApiClient {
     http: Client,
@@ -78,13 +82,31 @@ impl RiotApiClient {
     }
 
     fn get_text(&self, url: &str) -> ApiResult<String> {
-        Ok(self
-            .http
-            .get(url)
-            .header("X-Riot-Token", &self.api_key)
-            .send()?
-            .error_for_status()?
-            .text()?)
+        for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
+            let response = self
+                .http
+                .get(url)
+                .header("X-Riot-Token", &self.api_key)
+                .send()?;
+
+            if response.status() == StatusCode::TOO_MANY_REQUESTS
+                && attempt < MAX_RATE_LIMIT_RETRIES
+            {
+                let retry_after = response
+                    .headers()
+                    .get(RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(1);
+                eprintln!("Riot rate limit reached; retrying in {retry_after} second(s)");
+                std::thread::sleep(Duration::from_secs(retry_after));
+                continue;
+            }
+
+            return Ok(response.error_for_status()?.text()?);
+        }
+
+        unreachable!("the request loop always returns after its final attempt")
     }
 }
 

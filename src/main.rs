@@ -3,19 +3,20 @@ use std::error::Error;
 use std::io;
 
 use tft_nowcasting::analysis::{
-    early_adopters, emerging_candidates, emerging_events, forecast_from_scouts,
-    summarize_compositions, summarize_scouts,
+    CompositionAnalysis, emerging_candidates, emerging_events, summarize_compositions,
+    summarize_scouts,
 };
 use tft_nowcasting::api::RiotApiClient;
 use tft_nowcasting::audit::audit_cached_matches;
 use tft_nowcasting::dataset::load_standard_ranked_dataset;
-use tft_nowcasting::evaluation::evaluate_historical_forecasts;
-use tft_nowcasting::ingestion::{IngestionConfig, ingest};
+use tft_nowcasting::evaluation::evaluate_historical_forecasts_with_analysis;
+use tft_nowcasting::ingestion::{BackfillConfig, IngestionConfig, backfill_set, ingest};
 use tft_nowcasting::model::{MatchObservation, UnitObservation};
 use tft_nowcasting::storage::DataStore;
 
 const SAMPLE_WINDOW_SIZE: u64 = 300;
 const ANALYSIS_WINDOW_SIZE_MS: u64 = 24 * 60 * 60 * 1_000;
+const DEFAULT_BACKFILL_PLAYER_LIMIT: usize = 10;
 
 fn main() {
     if let Err(error) = run() {
@@ -33,10 +34,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some("api-smoke") => run_api_smoke_test(),
         Some("analyze") => run_cached_analysis(),
         Some("audit") => run_dataset_audit(),
+        Some("backfill") => run_backfill(backfill_config_from_args(env::args().skip(2))?),
         Some("ingest") => run_ingestion(ingestion_config_from_args(env::args().skip(2))?),
         Some(command) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("unknown command {command:?}; try `cargo run -- ingest`"),
+            format!("unknown command {command:?}; try `cargo run -- backfill 17`"),
         )
         .into()),
     }
@@ -47,17 +49,14 @@ fn run_cached_analysis() -> Result<(), Box<dyn Error>> {
     let region = env::var("RIOT_REGION").unwrap_or_else(|_| "asia".to_owned());
     let store = DataStore::new("data");
     let dataset = load_standard_ranked_dataset(&store, &region)?;
-    let summaries = summarize_compositions(&dataset.observations, ANALYSIS_WINDOW_SIZE_MS);
+    let analysis = CompositionAnalysis::new(&dataset.observations, ANALYSIS_WINDOW_SIZE_MS);
+    let summaries = analysis.summarize_compositions();
     let historical_events = emerging_events(&summaries);
-    let adopters = early_adopters(
-        &dataset.observations,
-        &historical_events,
-        ANALYSIS_WINDOW_SIZE_MS,
-    );
+    let adopters = analysis.early_adopters(&historical_events);
     let scouts = summarize_scouts(&adopters);
-    let forecasts = forecast_from_scouts(&dataset.observations, &scouts, ANALYSIS_WINDOW_SIZE_MS);
+    let forecasts = analysis.forecast_from_scouts(&scouts);
     let candidates = emerging_candidates(&summaries);
-    let evaluation = evaluate_historical_forecasts(&dataset.observations, ANALYSIS_WINDOW_SIZE_MS);
+    let evaluation = evaluate_historical_forecasts_with_analysis(&analysis);
 
     println!("Standard ranked analysis ({region})");
     println!("Included matches: {}", dataset.matches);
@@ -228,6 +227,79 @@ fn run_ingestion(config: IngestionConfig) -> Result<(), Box<dyn Error>> {
     println!("Player-match observations: {}", report.observations);
 
     Ok(())
+}
+
+fn run_backfill(config: BackfillConfig) -> Result<(), Box<dyn Error>> {
+    let client = RiotApiClient::from_env()?;
+    let store = DataStore::new("data");
+    let report = backfill_set(&client, &store, config)?;
+
+    println!(
+        "Backfilled Set {} histories for up to {} Challenger player(s)",
+        config.set_number, config.player_limit
+    );
+    println!(
+        "Saved ladder snapshot: {}",
+        report.ladder_snapshot.display()
+    );
+    println!("Players considered: {}", report.players_considered);
+    println!("History pages requested: {}", report.pages_requested);
+    println!("Unique matches inspected: {}", report.unique_matches);
+    println!(
+        "Unique standard ranked Set {} matches found: {}",
+        config.set_number, report.target_set_ranked_matches
+    );
+    println!("Downloaded matches: {}", report.downloaded_matches);
+    println!("Cache hits: {}", report.cached_matches);
+
+    Ok(())
+}
+
+fn backfill_config_from_args(
+    mut args: impl Iterator<Item = String>,
+) -> Result<BackfillConfig, io::Error> {
+    let set_number = args
+        .next()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "missing set number; try `cargo run -- backfill 17`",
+            )
+        })?
+        .parse::<i32>()
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "set number must be a positive integer",
+            )
+        })?;
+    let player_limit = match args.next() {
+        Some(value) => value.parse::<usize>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("player limit must be a positive integer, got {value:?}"),
+            )
+        })?,
+        None => DEFAULT_BACKFILL_PLAYER_LIMIT,
+    };
+
+    if set_number <= 0 || player_limit == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "backfill limits must be greater than zero",
+        ));
+    }
+    if let Some(value) = args.next() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unexpected backfill argument {value:?}"),
+        ));
+    }
+
+    Ok(BackfillConfig {
+        set_number,
+        player_limit,
+    })
 }
 
 fn ingestion_config_from_args(
@@ -410,7 +482,24 @@ fn sample_observations() -> Vec<MatchObservation> {
 
 #[cfg(test)]
 mod tests {
-    use super::ingestion_config_from_args;
+    use super::{backfill_config_from_args, ingestion_config_from_args};
+
+    #[test]
+    fn backfill_arguments_require_a_set_and_accept_a_player_limit() {
+        let config = backfill_config_from_args(["17".to_owned(), "25".to_owned()].into_iter())
+            .expect("valid backfill arguments should parse");
+
+        assert_eq!(config.set_number, 17);
+        assert_eq!(config.player_limit, 25);
+    }
+
+    #[test]
+    fn backfill_arguments_require_a_set_number() {
+        let error = backfill_config_from_args(std::iter::empty())
+            .expect_err("a missing set number should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
 
     #[test]
     fn ingestion_arguments_override_the_defaults() {

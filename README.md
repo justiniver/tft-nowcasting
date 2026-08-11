@@ -29,6 +29,21 @@ Optionally provide the number of players and recent matches per player:
 cargo run -- ingest 10 10
 ```
 
+Backfill the accessible history for a TFT set, starting from the ten highest-LP
+Challenger players in the current ladder snapshot:
+
+```bash
+cargo run -- backfill 17
+```
+
+An optional second argument changes the size of that player cohort. The command
+pages backward until each history reaches the previous standard-ranked set,
+saves matches as it goes, and reuses cached files when restarted:
+
+```bash
+cargo run -- backfill 17 25
+```
+
 Audit the cached dataset without making network requests:
 
 ```bash
@@ -41,8 +56,8 @@ Analyze only standard ranked matches from the local cache:
 cargo run -- analyze
 ```
 
-Ingestion saves original ladder and match JSON under `data/raw/`. Match files
-are reused on later runs instead of being downloaded again. Analysis keeps
+Ingestion and backfill save original ladder and match JSON under `data/raw/`.
+Match files are reused on later runs instead of being downloaded again. Analysis keeps
 queue 1100 matches, excludes other modes such as Double Up, and groups boards
 that share at least 80% of the larger board's champions. The analysis reports
 each family's usage share and its change from the previous populated window.

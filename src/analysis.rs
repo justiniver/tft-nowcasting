@@ -92,6 +92,96 @@ struct PatchComposition {
     composition: Composition,
 }
 
+struct CompositionFamilies {
+    representatives: HashMap<PatchComposition, Composition>,
+}
+
+impl CompositionFamilies {
+    fn representative_for(&self, observation: &MatchObservation) -> &Composition {
+        let exact_composition = PatchComposition {
+            patch: observation.patch.clone(),
+            composition: Composition::from_units(&observation.units),
+        };
+
+        self.representatives
+            .get(&exact_composition)
+            .expect("every observed composition should have a family")
+    }
+}
+
+/// A reusable view over one dataset and time-window size.
+///
+/// Composition families are the expensive part of analysis, so related
+/// calculations share the same assignment instead of rebuilding it.
+pub struct CompositionAnalysis<'a> {
+    observations: &'a [MatchObservation],
+    window_size: u64,
+    families: CompositionFamilies,
+}
+
+impl<'a> CompositionAnalysis<'a> {
+    pub fn new(observations: &'a [MatchObservation], window_size: u64) -> Self {
+        assert!(
+            window_size > 0,
+            "time window size must be greater than zero"
+        );
+
+        Self {
+            observations,
+            window_size,
+            families: assign_composition_families(observations),
+        }
+    }
+
+    pub fn summarize_compositions(&self) -> Vec<CompositionSummary> {
+        summarize_compositions_with_families(self.observations, self.window_size, &self.families)
+    }
+
+    pub fn early_adopters(&self, candidates: &[&CompositionSummary]) -> Vec<EarlyAdopter> {
+        early_adopters_with_families(
+            self.observations,
+            candidates,
+            self.window_size,
+            &self.families,
+        )
+    }
+
+    pub fn forecast_from_scouts(&self, scouts: &[ScoutSummary]) -> Vec<ScoutForecast> {
+        let Some(latest_window) = self
+            .observations
+            .iter()
+            .map(|observation| TimeWindow::containing(observation.timestamp, self.window_size))
+            .max()
+        else {
+            return Vec::new();
+        };
+
+        self.forecast_from_scouts_in_window(scouts, latest_window)
+    }
+
+    pub(crate) fn forecast_from_scouts_in_window(
+        &self,
+        scouts: &[ScoutSummary],
+        forecast_window: TimeWindow,
+    ) -> Vec<ScoutForecast> {
+        forecast_from_scouts_in_window(
+            self.observations,
+            scouts,
+            self.window_size,
+            forecast_window,
+            &self.families,
+        )
+    }
+
+    pub(crate) fn observations(&self) -> &'a [MatchObservation] {
+        self.observations
+    }
+
+    pub(crate) fn window_size(&self) -> u64 {
+        self.window_size
+    }
+}
+
 #[derive(Debug, Default)]
 struct PlacementAccumulator {
     play_count: usize,
@@ -149,24 +239,19 @@ pub fn summarize_compositions(
     observations: &[MatchObservation],
     window_size: u64,
 ) -> Vec<CompositionSummary> {
-    assert!(
-        window_size > 0,
-        "time window size must be greater than zero"
-    );
+    CompositionAnalysis::new(observations, window_size).summarize_compositions()
+}
 
-    let families = assign_composition_families(observations);
+fn summarize_compositions_with_families(
+    observations: &[MatchObservation],
+    window_size: u64,
+    families: &CompositionFamilies,
+) -> Vec<CompositionSummary> {
     let mut grouped: HashMap<CompositionGroup, PlacementAccumulator> = HashMap::new();
     let mut window_totals: HashMap<(String, TimeWindow), usize> = HashMap::new();
 
     for observation in observations {
-        let exact_composition = PatchComposition {
-            patch: observation.patch.clone(),
-            composition: Composition::from_units(&observation.units),
-        };
-        let representative = families
-            .get(&exact_composition)
-            .expect("every observed composition should have a family")
-            .clone();
+        let representative = families.representative_for(observation).clone();
         let window = TimeWindow::containing(observation.timestamp, window_size);
         let group = CompositionGroup {
             patch: observation.patch.clone(),
@@ -269,11 +354,15 @@ pub fn early_adopters(
     candidates: &[&CompositionSummary],
     window_size: u64,
 ) -> Vec<EarlyAdopter> {
-    assert!(
-        window_size > 0,
-        "time window size must be greater than zero"
-    );
+    CompositionAnalysis::new(observations, window_size).early_adopters(candidates)
+}
 
+fn early_adopters_with_families(
+    observations: &[MatchObservation],
+    candidates: &[&CompositionSummary],
+    window_size: u64,
+    families: &CompositionFamilies,
+) -> Vec<EarlyAdopter> {
     let candidate_windows: Vec<_> = candidates
         .iter()
         .filter_map(|candidate| {
@@ -297,18 +386,11 @@ pub fn early_adopters(
         return Vec::new();
     }
 
-    let families = assign_composition_families(observations);
     let mut grouped: HashMap<AdopterGroup, AdopterAccumulator> = HashMap::new();
 
     for observation in observations {
         let window = TimeWindow::containing(observation.timestamp, window_size);
-        let exact_composition = PatchComposition {
-            patch: observation.patch.clone(),
-            composition: Composition::from_units(&observation.units),
-        };
-        let representative = families
-            .get(&exact_composition)
-            .expect("every observed composition should have a family");
+        let representative = families.representative_for(observation);
 
         for candidate in &candidate_windows {
             if observation.patch != candidate.patch
@@ -419,18 +501,16 @@ pub fn forecast_from_scouts(
     scouts: &[ScoutSummary],
     window_size: u64,
 ) -> Vec<ScoutForecast> {
-    assert!(
-        window_size > 0,
-        "time window size must be greater than zero"
-    );
+    CompositionAnalysis::new(observations, window_size).forecast_from_scouts(scouts)
+}
 
-    let Some(latest_window) = observations
-        .iter()
-        .map(|observation| TimeWindow::containing(observation.timestamp, window_size))
-        .max()
-    else {
-        return Vec::new();
-    };
+fn forecast_from_scouts_in_window(
+    observations: &[MatchObservation],
+    scouts: &[ScoutSummary],
+    window_size: u64,
+    forecast_window: TimeWindow,
+    families: &CompositionFamilies,
+) -> Vec<ScoutForecast> {
     let established_scouts: HashSet<&str> = scouts
         .iter()
         .filter(|scout| scout.successful_signals >= MINIMUM_ESTABLISHED_SIGNALS)
@@ -440,24 +520,17 @@ pub fn forecast_from_scouts(
         return Vec::new();
     }
 
-    let families = assign_composition_families(observations);
     let mut grouped: HashMap<CompositionGroup, ForecastAccumulator> = HashMap::new();
     let mut total_scout_plays = 0;
 
     for observation in observations {
         let window = TimeWindow::containing(observation.timestamp, window_size);
-        if window != latest_window || !established_scouts.contains(observation.player_id.as_str()) {
+        if window != forecast_window || !established_scouts.contains(observation.player_id.as_str())
+        {
             continue;
         }
 
-        let exact_composition = PatchComposition {
-            patch: observation.patch.clone(),
-            composition: Composition::from_units(&observation.units),
-        };
-        let representative = families
-            .get(&exact_composition)
-            .expect("every observed composition should have a family")
-            .clone();
+        let representative = families.representative_for(observation).clone();
         let group = CompositionGroup {
             patch: observation.patch.clone(),
             window,
@@ -532,9 +605,7 @@ fn add_usage_rate_changes(summaries: &mut [CompositionSummary]) {
     }
 }
 
-fn assign_composition_families(
-    observations: &[MatchObservation],
-) -> HashMap<PatchComposition, Composition> {
+fn assign_composition_families(observations: &[MatchObservation]) -> CompositionFamilies {
     let mut first_seen: HashMap<PatchComposition, u64> = HashMap::new();
     for observation in observations {
         let exact_composition = PatchComposition {
@@ -555,25 +626,28 @@ fn assign_composition_families(
             .then_with(|| left.composition.cmp(&right.composition))
     });
 
-    let mut representatives: Vec<PatchComposition> = Vec::new();
+    let mut current_patch = None;
+    let mut representatives: Vec<Composition> = Vec::new();
     let mut families = HashMap::new();
 
     for (exact_composition, _) in exact_compositions {
+        if current_patch.as_deref() != Some(exact_composition.patch.as_str()) {
+            current_patch = Some(exact_composition.patch.clone());
+            representatives.clear();
+        }
+
         let matching_representative = representatives
             .iter()
             .find(|representative| {
-                representative.patch == exact_composition.patch
-                    && representative
-                        .composition
-                        .champion_overlap(&exact_composition.composition)
-                        >= MINIMUM_CHAMPION_OVERLAP
+                representative.champion_overlap(&exact_composition.composition)
+                    >= MINIMUM_CHAMPION_OVERLAP
             })
-            .map(|representative| representative.composition.clone());
+            .cloned();
 
         let representative = match matching_representative {
             Some(representative) => representative,
             None => {
-                representatives.push(exact_composition.clone());
+                representatives.push(exact_composition.composition.clone());
                 exact_composition.composition.clone()
             }
         };
@@ -581,7 +655,9 @@ fn assign_composition_families(
         families.insert(exact_composition, representative);
     }
 
-    families
+    CompositionFamilies {
+        representatives: families,
+    }
 }
 
 #[cfg(test)]
