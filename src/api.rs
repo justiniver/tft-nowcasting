@@ -13,7 +13,7 @@ use crate::model::{MatchObservation, UnitObservation};
 
 pub type ApiResult<T> = Result<T, Box<dyn Error>>;
 
-const MAX_RATE_LIMIT_RETRIES: u8 = 3;
+const MAX_REQUEST_RETRIES: u8 = 3;
 const REQUEST_INTERVAL: Duration = Duration::from_millis(1_250);
 
 pub struct RiotApiClient {
@@ -86,17 +86,25 @@ impl RiotApiClient {
     }
 
     fn get_text(&self, url: &str) -> ApiResult<String> {
-        for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
+        for attempt in 0..=MAX_REQUEST_RETRIES {
             self.wait_for_request_slot();
-            let response = self
+            let response = match self
                 .http
                 .get(url)
                 .header("X-Riot-Token", &self.api_key)
-                .send()?;
-
-            if response.status() == StatusCode::TOO_MANY_REQUESTS
-                && attempt < MAX_RATE_LIMIT_RETRIES
+                .send()
             {
+                Ok(response) => response,
+                Err(error) if attempt < MAX_REQUEST_RETRIES => {
+                    let delay = u64::from(attempt) + 1;
+                    eprintln!("Riot request failed ({error}); retrying in {delay} second(s)");
+                    std::thread::sleep(Duration::from_secs(delay));
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+
+            if response.status() == StatusCode::TOO_MANY_REQUESTS && attempt < MAX_REQUEST_RETRIES {
                 let retry_after = response
                     .headers()
                     .get(RETRY_AFTER)
@@ -105,6 +113,16 @@ impl RiotApiClient {
                     .unwrap_or(1);
                 eprintln!("Riot rate limit reached; retrying in {retry_after} second(s)");
                 std::thread::sleep(Duration::from_secs(retry_after));
+                continue;
+            }
+
+            if response.status().is_server_error() && attempt < MAX_REQUEST_RETRIES {
+                let delay = u64::from(attempt) + 1;
+                eprintln!(
+                    "Riot returned {}; retrying in {delay} second(s)",
+                    response.status()
+                );
+                std::thread::sleep(Duration::from_secs(delay));
                 continue;
             }
 
